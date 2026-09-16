@@ -19,8 +19,8 @@ Complete this once before writing application code. This creates a clean, reprod
 - [x] Add a concise `README.md` with the product purpose, stack, local status, and links to the planning documents.
 - [x] Confirm no real client/bank data, passwords, API keys, signing secrets, or downloaded data exist in the initial tracked files.
 - [ ] Review `git status` so `.DS_Store` is excluded and only intended documentation/configuration is staged.
-- [ ] Create the first commit: `docs: add milestone ledger product plan`.
-- [ ] Push `main` to `origin` and verify the GitHub repository shows the commit.
+- [x] Create the first commit: `docs: add milestone ledger product plan` (`5ce877a`).
+- [x] Push `main` to `origin`; `main` now tracks the GitHub remote.
 
 ## Confirm build decisions
 
@@ -43,7 +43,7 @@ Complete this once before writing application code. This creates a clean, reprod
 
 Start Day 1 only when these are checked:
 
-- [ ] GitHub remote connected and first documentation commit pushed.
+- [x] GitHub remote connected and first documentation commit pushed.
 - [x] `.gitignore` prevents accidental secret/build-file commits.
 - [x] Java 21, Docker Engine 29.6.1, and Docker Compose 5.3.0 are available.
 - [x] Core loop and Day 1 exit gate are documented in [BUILD_CHECKLIST.md](BUILD_CHECKLIST.md).
