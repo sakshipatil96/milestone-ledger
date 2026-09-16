@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ${DB_OWNER_PASSWORD}
       DB_APP_PASSWORD: ${DB_APP_PASSWORD}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./docker/postgres/init-runtime-user.sh:/docker-entrypoint-initdb.d/10-init-runtime-user.sh:ro
@@ -20,7 +20,7 @@ services:
   bank-simulator:
     image: wiremock/wiremock:3.13.1
     ports:
-      - "8089:8080"
+      - "127.0.0.1:8089:8080"
     volumes:
       - ./demo/bank-simulator:/home/wiremock:ro
     command: ["--global-response-templating", "--disable-gzip"]
@@ -35,12 +35,13 @@ services:
       DB_MIGRATION_URL: jdbc:postgresql://postgres:5432/milestone_ledger
       DB_MIGRATION_USERNAME: milestone_owner
       DB_MIGRATION_PASSWORD: ${DB_OWNER_PASSWORD}
-      APP_SECURITY_CERTIFIER_PASSWORD: ${CERTIFIER_PASSWORD}
-      APP_SECURITY_ACCOUNTS_PASSWORD: ${ACCOUNTS_PASSWORD}
-      APP_SECURITY_MANAGER_PASSWORD: ${MANAGER_PASSWORD}
+      APP_SETUP_PROJECT_ID: ${APP_SETUP_PROJECT_ID}
+      APP_SECURITY_CERTIFIER_PASSWORD_HASH: ${APP_SECURITY_CERTIFIER_PASSWORD_HASH}
+      APP_SECURITY_ACCOUNTS_PASSWORD_HASH: ${APP_SECURITY_ACCOUNTS_PASSWORD_HASH}
+      APP_SECURITY_MANAGER_PASSWORD_HASH: ${APP_SECURITY_MANAGER_PASSWORD_HASH}
       BANK_BASE_URL: http://bank-simulator:8080
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy

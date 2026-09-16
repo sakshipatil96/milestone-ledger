@@ -32,6 +32,10 @@ All boxes except the bank and database are modules in the same application. The 
 | Reconciliation worker | Compare a complete bank snapshot with local receipts; recover missing records and expose disagreements. |
 | Exception service | Explain unallocated funds and bank discrepancies; preserve notes and resolution history. |
 
+## Day 1 setup slice
+
+`GET /api/v1/projects` and `GET /api/v1/projects/{projectId}/milestones` are read-only JDBC queries scoped to the configured project UUID. All three configured roles have those reads; manager has no implied certification authority. Password hashes are supplied as BCrypt configuration, while the raw demo passwords stay outside source control. Correlation handling runs before security so rejected authentication attempts receive `X-Request-Id`. `/api/v1/health/live` is process-only; `/api/v1/health/ready` performs a database query and returns only a minimal status.
+
 ## Data flow
 
 ### Certification

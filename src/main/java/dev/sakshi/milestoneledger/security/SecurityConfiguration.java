@@ -1,9 +1,14 @@
 package dev.sakshi.milestoneledger.security;
 
+import tools.jackson.databind.ObjectMapper;
+import dev.sakshi.milestoneledger.shared.web.ApiErrorResponse;
+import dev.sakshi.milestoneledger.shared.web.CorrelationIdFilter;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetailsService;
@@ -11,9 +16,11 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.www.BasicAuthenticationEntryPoint;
 
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(AppSecurityProperties.class)
+@EnableMethodSecurity
 public class SecurityConfiguration {
 
     @Bean
@@ -22,31 +29,47 @@ public class SecurityConfiguration {
     }
 
     @Bean
-    UserDetailsService userDetailsService(
-            AppSecurityProperties properties,
-            PasswordEncoder passwordEncoder) {
+    UserDetailsService userDetailsService(AppSecurityProperties properties) {
         return new InMemoryUserDetailsManager(
                 User.withUsername("certifier")
-                        .password(passwordEncoder.encode(properties.certifierPassword()))
+                        .password(properties.certifierPasswordHash())
                         .roles("CERTIFIER")
                         .build(),
                 User.withUsername("accounts")
-                        .password(passwordEncoder.encode(properties.accountsPassword()))
+                        .password(properties.accountsPasswordHash())
                         .roles("ACCOUNTS")
                         .build(),
                 User.withUsername("manager")
-                        .password(passwordEncoder.encode(properties.managerPassword()))
+                        .password(properties.managerPasswordHash())
                         .roles("MANAGER")
                         .build());
     }
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper objectMapper) throws Exception {
         return http
                 .authorizeHttpRequests(authorize -> authorize
-                        .requestMatchers("/actuator/health/**", "/livez", "/readyz").permitAll()
+                        .requestMatchers("/actuator/health/**", "/livez", "/readyz", "/api/v1/health/**").permitAll()
                         .anyRequest().authenticated())
+                .exceptionHandling(exceptions -> exceptions
+                        .authenticationEntryPoint(authenticationEntryPoint(objectMapper))
+                        .accessDeniedHandler(new JsonAccessDeniedHandler(objectMapper)))
                 .httpBasic(Customizer.withDefaults())
                 .build();
     }
+
+    private BasicAuthenticationEntryPoint authenticationEntryPoint(ObjectMapper objectMapper) {
+        return new BasicAuthenticationEntryPoint() {
+            @Override
+            public void commence(jakarta.servlet.http.HttpServletRequest request, HttpServletResponse response,
+                    org.springframework.security.core.AuthenticationException exception) throws java.io.IOException {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                response.setHeader("WWW-Authenticate", "Basic realm=\"milestone-ledger\"");
+                response.setContentType("application/json");
+                objectMapper.writeValue(response.getOutputStream(), new ApiErrorResponse(new ApiErrorResponse.Error(
+                        "UNAUTHENTICATED", "Authentication is required.", CorrelationIdFilter.requestId(request))));
+            }
+        };
+    }
+
 }

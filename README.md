@@ -6,7 +6,7 @@ This is a synthetic-data portfolio prototype inspired by a contractor workflow. 
 
 ## Current status
 
-The Day 1 foundation is implemented: the application starts with PostgreSQL, applies Flyway migrations, exposes health probes, emits structured request logs, and verifies the schema with a Testcontainers integration test. Business APIs are added feature by feature after this baseline.
+Day 1 provides read-only inspection of one seeded project and its two milestones. It uses separate migration/runtime database identities, BCrypt-configured HTTP Basic demo identities, correlated errors, and PostgreSQL-backed readiness.
 
 ## Planned stack
 
@@ -44,17 +44,36 @@ docker compose up --build
 
 The copied values are local synthetic placeholders. Replace them in `.env` if desired; never commit that file.
 
+Generate three BCrypt hashes locally (for example `htpasswd -bnBC 12 '' 'a-local-password' | tr -d ':\n'`) and put them in `.env` as the three `APP_SECURITY_*_PASSWORD_HASH` values. Set `APP_SETUP_PROJECT_ID` to the supplied synthetic project UUID. Keep the three raw passwords only in your shell when using the demo; never put them in the script or commit them.
+
 Once the containers are healthy:
 
 - Application readiness: `http://localhost:8080/actuator/health/readiness`
 - Application liveness: `http://localhost:8080/actuator/health/liveness`
 - Simulated bank receipts: `http://localhost:8089/receipts`
+- Day 1 liveness: `http://localhost:8080/api/v1/health/live`
+- Day 1 readiness: `http://localhost:8080/api/v1/health/ready`
+
+All Compose-published ports bind to `127.0.0.1`. The legacy actuator probes and `/livez`/`/readyz` remain available for compatibility.
+
+## Setup demo
+
+Supply raw credentials from your shell, then run the persisted-response demo. It checks readiness, reads projects and milestones for certifier/accounts/manager, and confirms missing and invalid credentials return `401`.
+
+```bash
+export CERTIFIER_PASSWORD='...'
+export ACCOUNTS_PASSWORD='...'
+export MANAGER_PASSWORD='...'
+./demo/setup-read.sh
+```
 
 Stop the environment without deleting its database volume:
 
 ```bash
 docker compose down
 ```
+
+Do not use `docker compose down -v`: the named volume intentionally preserves fixtures and any later test records. Re-running the app applies Flyway safely and never re-runs its deterministic seed migration.
 
 ## Run verification
 
@@ -64,4 +83,8 @@ The Maven Wrapper runs unit tests and PostgreSQL integration tests. Docker Deskt
 ./mvnw verify
 ```
 
-The integration test starts an isolated PostgreSQL 17 container, applies every migration, verifies the synthetic project and milestones, and calls the public readiness endpoint.
+The integration test starts an isolated PostgreSQL 17 container, applies every migration with the owner identity, runs the application with the restricted runtime identity, and verifies setup APIs, authorization, validation helpers, fixture preservation, and denied setup writes.
+
+## Latest verification evidence
+
+The latest local verification passed `./mvnw verify`: `AppSecurityPropertiesTest` covers valid and malformed BCrypt configuration; `JsonAccessDeniedHandlerTest` covers the HTTP `403` correlated envelope; `CorrelationIdFilterTest` covers successful-health log suppression; and `DatabaseMigrationIT` covers restricted runtime writes, fixture re-migration preservation, all three setup-read roles, request/error correlation, project isolation, malformed cursor handling, stable paginated milestone pages including an empty page, service authorization, and money/reference validation. An isolated Compose run also passed the setup demo, restart preservation for both project and milestone responses, and database outage behavior (`ready=503`, `live=200`, protected setup read `503`). The demo's macOS Bash compatibility and nested-client-ID parsing were corrected during that run.

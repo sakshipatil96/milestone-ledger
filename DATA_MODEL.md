@@ -28,7 +28,7 @@
 | `reconciliation_item` | `run_id`, `bank_receipt_id`, canonical receipt JSON/hash, nullable `inbox_event_id`, `outcome`. Durable staging and recovery tracking. |
 | `idempotency_request` | `actor_id`, `operation`, `key`, `request_hash`, `response_status`, `response_body`, `created_at`. Unique actor/operation/key; written atomically with successful user mutation. Retain for the prototype lifetime. |
 
-Actors are seeded configuration identities (`CERTIFIER`, `ACCOUNTS`, `MANAGER`) or named system actors. No user-management tables or APIs. Client identity is derived through the receipt's project; matching never infers a project from an untrusted reference.
+Actors are a fixed registry for configured Basic-auth identities (`CERTIFIER`, `ACCOUNTS`, `MANAGER`) and named system actors; it is not a user-management system and has no user-management API. The runtime role can read the setup registry/client/project data but cannot modify clients or projects. Client identity is derived through the receipt's project; matching never infers a project from an untrusted reference.
 
 ### Financial entry rules
 

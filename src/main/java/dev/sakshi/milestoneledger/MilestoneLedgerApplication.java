@@ -2,11 +2,14 @@ package dev.sakshi.milestoneledger;
 
 import java.time.Clock;
 
+import dev.sakshi.milestoneledger.setup.SetupProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 
 @SpringBootApplication
+@EnableConfigurationProperties(SetupProperties.class)
 public class MilestoneLedgerApplication {
 
     public static void main(String[] args) {

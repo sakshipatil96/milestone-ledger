@@ -8,6 +8,7 @@ spring:
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
+      connection-timeout: 1000
   flyway:
     url: ${DB_MIGRATION_URL:${DB_URL}}
     user: ${DB_MIGRATION_USERNAME:${DB_USERNAME}}
@@ -20,10 +21,12 @@ server:
   shutdown: graceful
 
 app:
+  setup:
+    project-id: ${APP_SETUP_PROJECT_ID}
   security:
-    certifier-password: ${APP_SECURITY_CERTIFIER_PASSWORD}
-    accounts-password: ${APP_SECURITY_ACCOUNTS_PASSWORD}
-    manager-password: ${APP_SECURITY_MANAGER_PASSWORD}
+    certifier-password-hash: ${APP_SECURITY_CERTIFIER_PASSWORD_HASH}
+    accounts-password-hash: ${APP_SECURITY_ACCOUNTS_PASSWORD_HASH}
+    manager-password-hash: ${APP_SECURITY_MANAGER_PASSWORD_HASH}
   bank:
     base-url: ${BANK_BASE_URL:http://localhost:8089}
 
@@ -49,6 +52,7 @@ management:
 info:
   app:
     name: ${spring.application.name}
+    version: ${APP_VERSION:0.1.0-SNAPSHOT}
     description: Certified milestone collections and payment reconciliation
 
 logging:

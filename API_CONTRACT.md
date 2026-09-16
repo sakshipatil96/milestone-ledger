@@ -2,7 +2,7 @@
 
 ## Conventions and auth rules
 
-- Base path `/api/v1`; JSON; UUID resource IDs; UTC ISO-8601 timestamps. Examples use readable ID placeholders that the demo collection substitutes with actual UUIDs.
+- Base path `/api/v1`; JSON; UUID resource IDs; UTC ISO-8601 timestamps. The Day 1 routes below are the only implemented business routes.
 - Amounts are decimal-string paise: `"4000000"` means ₹40,000. Currency is always `INR`. Reject floats, negative/zero money inputs, overflow, and unknown fields.
 - Local prototype uses HTTP Basic with seeded identities and password hashes configured outside source control. Bind to localhost; require TLS if exposed. No signup/login API.
 - `CERTIFIER`: read worklists and certify. `ACCOUNTS`: read, allocate, add exception notes, start reconciliation. `MANAGER`: accounts permissions plus reversals and failed-event retry. Manager does not implicitly gain certification permission.
@@ -15,8 +15,8 @@
 
 | Method and path | Access | Result |
 | --- | --- | --- |
-| `GET /projects` | All roles | Seeded project/client metadata. |
-| `GET /projects/{projectId}/milestones` | All roles | Scheduled/certified milestones. |
+| `GET /api/v1/projects` | All roles | Configured project/client metadata. |
+| `GET /api/v1/projects/{projectId}/milestones` | All roles | Fixed milestone schedule and derived certification status. |
 | `POST /milestones/{milestoneId}/certification` | Certifier | `201`, certification and demand. |
 | `GET /demands?projectId=...&status=OPEN` | All roles | Demands with amount, received, outstanding, derived status. Optional status filter. |
 | `GET /demands/{demandId}` | All roles | Demand details and balances. |
@@ -33,11 +33,27 @@
 | `GET /ingestion-events?status=FAILED` | Manager | Minimal operational metadata; optional status filter. |
 | `GET /ingestion-events/{eventId}` | Manager | Ingestion status, receipt ID, or failure/conflict code. |
 | `POST /ingestion-events/{eventId}/retry` | Manager | `202`, reset a failed event to pending. |
-| `GET /health/live`, `GET /health/ready` | Public, local | `200` or `503`; readiness checks database connectivity. |
+| `GET /api/v1/health/live`, `GET /api/v1/health/ready` | Public, local | Minimal `UP`/`DOWN`; readiness checks database connectivity. |
 
 References to event IDs in URL paths mean local inbox UUIDs; webhook `eventId` is the bank's delivery identifier.
 
 ## Request and response examples
+
+### Inspect fixed setup
+
+`GET /api/v1/projects?limit=50` (any configured role) returns:
+
+```json
+{"items":[{"id":"30000000-0000-0000-0000-000000000001","code":"DEMO-RIVER-001","name":"River Link Upgrade — Synthetic Demo","currency":"INR","client":{"id":"20000000-0000-0000-0000-000000000001","name":"Northstar Public Works Authority"}}],"nextCursor":null}
+```
+
+`GET /api/v1/projects/{projectId}/milestones` returns ordered schedule items:
+
+```json
+{"items":[{"id":"40000000-0000-0000-0000-000000000001","projectId":"30000000-0000-0000-0000-000000000001","sequence":1,"name":"Foundation package complete","status":"SCHEDULED","certifiedAmountPaise":null,"certificationReference":null,"certifiedAt":null,"certifiedBy":null}],"nextCursor":null}
+```
+
+Collections use `limit` default 50/max 100 and an opaque timestamp/ID cursor. Invalid UUIDs, limits, and cursors return `400 VALIDATION_ERROR`; unknown or out-of-scope projects return `404 NOT_FOUND`. Certification fields remain nullable until ML-03.
 
 ### Record certification
 
