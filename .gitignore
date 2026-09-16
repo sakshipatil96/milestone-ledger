@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Java and Maven
+target/
+*.class
+*.log
+
+# Test and coverage output
+coverage/
+build/
+
+# IDE files
+.idea/
+*.iml
+.project
+.classpath
+.settings/
+.vscode/
+
+# Docker local overrides
+compose.override.yaml
+docker-compose.override.yml
