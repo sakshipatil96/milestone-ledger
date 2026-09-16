@@ -6,7 +6,7 @@ This is a synthetic-data portfolio prototype inspired by a contractor workflow. 
 
 ## Current status
 
-Planning is complete; implementation starts with the local project foundation. The five-day build plan and buffer day are in [BUILD_CHECKLIST.md](BUILD_CHECKLIST.md).
+Planning is complete; implementation starts with the local project foundation.
 
 ## Planned stack
 
@@ -22,9 +22,8 @@ Planning is complete; implementation starts with the local project foundation. T
 - [System design](SYSTEM_DESIGN.md)
 - [Data model](DATA_MODEL.md)
 - [API contract](API_CONTRACT.md)
-- [Definition of done](DEFINITION_OF_DONE.md)
-- [AI contribution rules](AI_RULES.md)
-- [Pre-Day-1 checklist](PRE_DAY_1_CHECKLIST.md)
+
+AI guidance and working checklists are intentionally local-only and excluded from Git.
 
 ## MVP proof
 
