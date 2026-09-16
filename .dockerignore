@@ -1,0 +1,11 @@
+.git
+.github
+.idea
+.vscode
+.DS_Store
+.env
+target
+*.log
+AI_RULES.md
+*CHECKLIST*.md
+DEFINITION_OF_DONE.md

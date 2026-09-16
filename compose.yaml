@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: milestone_ledger
+      POSTGRES_USER: milestone_owner
+      POSTGRES_PASSWORD: ${DB_OWNER_PASSWORD}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init-runtime-user.sh:/docker-entrypoint-initdb.d/10-init-runtime-user.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U milestone_owner -d milestone_ledger"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  bank-simulator:
+    image: wiremock/wiremock:3.13.1
+    ports:
+      - "8089:8080"
+    volumes:
+      - ./demo/bank-simulator:/home/wiremock:ro
+    command: ["--global-response-templating", "--disable-gzip"]
+
+  app:
+    build:
+      context: .
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/milestone_ledger
+      DB_USERNAME: milestone_app
+      DB_PASSWORD: ${DB_APP_PASSWORD}
+      DB_MIGRATION_URL: jdbc:postgresql://postgres:5432/milestone_ledger
+      DB_MIGRATION_USERNAME: milestone_owner
+      DB_MIGRATION_PASSWORD: ${DB_OWNER_PASSWORD}
+      APP_SECURITY_CERTIFIER_PASSWORD: ${CERTIFIER_PASSWORD}
+      APP_SECURITY_ACCOUNTS_PASSWORD: ${ACCOUNTS_PASSWORD}
+      APP_SECURITY_MANAGER_PASSWORD: ${MANAGER_PASSWORD}
+      BANK_BASE_URL: http://bank-simulator:8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bank-simulator:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  postgres-data:

@@ -1,0 +1,57 @@
+spring:
+  application:
+    name: milestone-ledger
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+  flyway:
+    url: ${DB_MIGRATION_URL:${DB_URL}}
+    user: ${DB_MIGRATION_USERNAME:${DB_USERNAME}}
+    password: ${DB_MIGRATION_PASSWORD:${DB_PASSWORD}}
+    locations: classpath:db/migration
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+server:
+  shutdown: graceful
+
+app:
+  security:
+    certifier-password: ${APP_SECURITY_CERTIFIER_PASSWORD}
+    accounts-password: ${APP_SECURITY_ACCOUNTS_PASSWORD}
+    manager-password: ${APP_SECURITY_MANAGER_PASSWORD}
+  bank:
+    base-url: ${BANK_BASE_URL:http://localhost:8089}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+        add-additional-paths: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: Certified milestone collections and payment reconciliation
+
+logging:
+  structured:
+    format:
+      console: ecs

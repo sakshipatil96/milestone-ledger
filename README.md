@@ -6,7 +6,7 @@ This is a synthetic-data portfolio prototype inspired by a contractor workflow. 
 
 ## Current status
 
-Planning is complete; implementation starts with the local project foundation.
+The Day 1 foundation is implemented: the application starts with PostgreSQL, applies Flyway migrations, exposes health probes, emits structured request logs, and verifies the schema with a Testcontainers integration test. Business APIs are added feature by feature after this baseline.
 
 ## Planned stack
 
@@ -32,3 +32,36 @@ The completed demo will show that a receipt delivered five times changes a deman
 ## Scope boundaries
 
 The MVP supports one synthetic project, one synthetic client, INR, approved net collectible amounts, exact-reference matching, explicit exceptions, and reconciliation. It excludes real bank connections, payment initiation, GST/TDS calculations, certification approval workflows, and client data.
+
+## Run locally
+
+Prerequisites: Java 21 and a running Docker Desktop installation.
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+The copied values are local synthetic placeholders. Replace them in `.env` if desired; never commit that file.
+
+Once the containers are healthy:
+
+- Application readiness: `http://localhost:8080/actuator/health/readiness`
+- Application liveness: `http://localhost:8080/actuator/health/liveness`
+- Simulated bank receipts: `http://localhost:8089/receipts`
+
+Stop the environment without deleting its database volume:
+
+```bash
+docker compose down
+```
+
+## Run verification
+
+The Maven Wrapper runs unit tests and PostgreSQL integration tests. Docker Desktop must be running.
+
+```bash
+./mvnw verify
+```
+
+The integration test starts an isolated PostgreSQL 17 container, applies every migration, verifies the synthetic project and milestones, and calls the public readiness endpoint.
