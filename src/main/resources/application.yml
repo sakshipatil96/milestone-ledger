@@ -29,6 +29,11 @@ app:
     manager-password-hash: ${APP_SECURITY_MANAGER_PASSWORD_HASH}
   bank:
     base-url: ${BANK_BASE_URL:http://localhost:8089}
+    webhook:
+      source: ${BANK_WEBHOOK_SOURCE:demo-bank}
+      project-id: ${BANK_WEBHOOK_PROJECT_ID}
+      account-reference: ${BANK_WEBHOOK_ACCOUNT_REFERENCE:DEMO-ACCOUNT-001}
+      signing-secret: ${BANK_WEBHOOK_SIGNING_SECRET}
 
 management:
   endpoints:

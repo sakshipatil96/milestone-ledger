@@ -6,7 +6,7 @@ This is a synthetic-data portfolio prototype inspired by a contractor workflow. 
 
 ## Current status
 
-Day 1 provides read-only inspection of one seeded project and its two milestones. It uses separate migration/runtime database identities, BCrypt-configured HTTP Basic demo identities, correlated errors, and PostgreSQL-backed readiness.
+Day 2 completes certification and demand creation as a transactionally verified vertical slice. It uses separate migration/runtime database identities, BCrypt-configured HTTP Basic demo identities, CSRF-protected browser-style mutations, correlated errors, PostgreSQL-backed readiness, and signed durable bank-event acceptance. Receipt processing is intentionally still in progress: accepted events remain `PENDING`.
 
 ## Planned stack
 
@@ -25,9 +25,9 @@ Day 1 provides read-only inspection of one seeded project and its two milestones
 
 AI guidance and working checklists are intentionally local-only and excluded from Git.
 
-## MVP proof
+## Current proof and boundary
 
-The completed demo will show that a receipt delivered five times changes a demand balance once, while two genuine same-amount receipts both remain recorded. It will also show reconciliation recovering a receipt whose notification was omitted.
+The Day 2 demo certifies one scheduled ₹1,00,000 milestone, creates one `OPEN` demand, proves idempotent replay and authorization failures, then signs and stores a fictional bank notification as `PENDING`. It does not process receipts, allocate money, or run reconciliation; those are Day 3 features.
 
 ## Scope boundaries
 
@@ -64,6 +64,7 @@ Supply raw credentials from your shell, then run the persisted-response demo. It
 export CERTIFIER_PASSWORD='...'
 export ACCOUNTS_PASSWORD='...'
 export MANAGER_PASSWORD='...'
+export BANK_WEBHOOK_SIGNING_SECRET='...'
 ./demo/setup-read.sh
 ```
 
@@ -83,8 +84,8 @@ The Maven Wrapper runs unit tests and PostgreSQL integration tests. Docker Deskt
 ./mvnw verify
 ```
 
-The integration test starts an isolated PostgreSQL 17 container, applies every migration with the owner identity, runs the application with the restricted runtime identity, and verifies setup APIs, authorization, validation helpers, fixture preservation, and denied setup writes.
+The integration tests start isolated PostgreSQL 17 containers, apply every migration with the owner identity, run the application with the restricted runtime identity, and cover setup regression behavior plus CSRF-protected certification/idempotency and signed pending-webhook acceptance.
 
 ## Latest verification evidence
 
-The latest local verification passed `./mvnw verify`: `AppSecurityPropertiesTest` covers valid and malformed BCrypt configuration; `JsonAccessDeniedHandlerTest` covers the HTTP `403` correlated envelope; `CorrelationIdFilterTest` covers successful-health log suppression; and `DatabaseMigrationIT` covers restricted runtime writes, fixture re-migration preservation, all three setup-read roles, request/error correlation, project isolation, malformed cursor handling, stable paginated milestone pages including an empty page, service authorization, and money/reference validation. An isolated Compose run also passed the setup demo, restart preservation for both project and milestone responses, and database outage behavior (`ready=503`, `live=200`, protected setup read `503`). The demo's macOS Bash compatibility and nested-client-ID parsing were corrected during that run.
+Latest verification passed `./mvnw verify` with PostgreSQL 17 Testcontainers: `AppSecurityPropertiesTest`, `JsonAccessDeniedHandlerTest`, `CorrelationIdFilterTest`, `ApiExceptionHandlerTest`, `BankWebhookServiceTest`, `DatabaseMigrationIT`, and `CertificationAndIngestionIT` (19 tests total). The integration suite applies V1–V5 to clean databases, safely re-applies migrations to an existing Day 1 fixture, and verifies CSRF, certification/idempotency, real PostgreSQL concurrency, runtime immutability, transaction rollback at certification/demand/audit boundaries, HMAC acceptance/replay/conflict, malformed and concurrent webhook handling, database-unavailable refusal, and pending-event persistence through a fresh application context. The credential-dependent Compose demo was also run successfully with local external credentials. Do not treat receipt processing as verified until its Day 3 combined gate is complete.

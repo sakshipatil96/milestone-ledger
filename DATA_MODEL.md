@@ -5,7 +5,7 @@
 - PostgreSQL; UUID primary keys, `timestamptz` UTC timestamps. Fields below omit `id` where obvious.
 - Money uses signed `bigint` paise, serialized as decimal strings in JSON. Inputs must fit `bigint`; use checked arithmetic. INR only. Demand, receipt, and allocation inputs are strictly positive.
 - References are case-sensitive exact strings. Reject leading/trailing whitespace; do not apply fuzzy normalization.
-- Posted receipts, certification facts, and financial entries cannot be updated/deleted by the runtime database role. Operational state can change; retain its audit events. Migrations use a separate privileged role.
+- Posted certification facts cannot be changed by the runtime database role: column grants limit it to the one certification transition, and a database trigger rejects later fact changes. Receipt and financial-entry immutability are Day 3 work because those tables do not yet exist. Migrations use a separate privileged role.
 - For receipt `r`: `unallocated(r) = receipt.amount - SUM(allocation effects for r)`.
 - For demand `d`: `outstanding(d) = demand.amount - SUM(allocation effects for d)`.
 - `ALLOCATION` effects are positive; `ALLOCATION_REVERSAL` effects are negative. Both balances must remain nonnegative. Receipt money equals net allocated plus unallocated money.
@@ -19,8 +19,8 @@
 | `project` | `client_id`, unique `code`, `name`, `currency='INR'`. |
 | `milestone` | `project_id`, `sequence`, `name`, nullable `certified_amount_paise`, `certification_reference`, `certified_at`, `certified_by`. Certification fields are all null or all populated. |
 | `demand` | `milestone_id`, `project_id`, unique `reference`, `amount_paise`, optional `due_date`, `created_at`. Amount equals the certified amount at creation. |
-| `inbox_event` | `source`, `event_id`, `bank_receipt_id`, minimal normalized receipt JSON, `canonical_hash`, `origin` (`WEBHOOK`/`RECONCILIATION`), `status`, `attempt_count`, `next_attempt_at`, `last_error_code`, optional `receipt_id`, `received_at`, `processed_at`. |
-| `receipt` | `source`, `bank_receipt_id`, `project_id`, `amount_paise`, `currency`, nullable `demand_reference`, `posted_at`, `recorded_at`, `canonical_hash`. Source is a configured adapter/account alias, not arbitrary user text. |
+| `inbox_event` | **Implemented Day 2:** `source`, `event_id`, trusted `project_id`/`account_reference`, normalized bank receipt ID/amount/currency/reference/post time, `canonical_hash`, `status`, retry metadata, and timestamps. No receipt foreign key exists yet. |
+| `receipt` | **Planned Day 3:** `source`, `bank_receipt_id`, `project_id`, `amount_paise`, `currency`, nullable `demand_reference`, `posted_at`, `recorded_at`, `canonical_hash`. |
 | `financial_entry` | `kind`, `receipt_id`, nullable `demand_id`, signed `amount_paise`, nullable `reverses_entry_id`, `actor_id`, `reason`, optional `inbox_event_id`, `created_at`. |
 | `exception_case` | `type`, `project_id`, optional `receipt_id`, optional `source`/`bank_receipt_id`, unique `dedupe_key`, `status`, `reason_code`, `first_seen_at`, `last_seen_at`, optional `resolved_at`. Do not store a separate authoritative unallocated amount. |
 | `audit_event` | `actor_id`, `action`, `entity_type`, `entity_id`, optional `reason`, `request_id`, `created_at`. Append-only; excludes raw sensitive payloads. Includes exception notes and transitions. |

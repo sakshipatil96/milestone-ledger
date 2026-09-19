@@ -36,7 +36,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         "app.setup.project-id=30000000-0000-0000-0000-000000000001",
         "app.security.certifier-password-hash=$2y$10$NdIazdiUe88vtpMK8FnE.O1BKli2ZuCQbnu/zoiv2xuAGD/JnxBqu",
         "app.security.accounts-password-hash=$2y$10$NdIazdiUe88vtpMK8FnE.O1BKli2ZuCQbnu/zoiv2xuAGD/JnxBqu",
-        "app.security.manager-password-hash=$2y$10$NdIazdiUe88vtpMK8FnE.O1BKli2ZuCQbnu/zoiv2xuAGD/JnxBqu" })
+        "app.security.manager-password-hash=$2y$10$NdIazdiUe88vtpMK8FnE.O1BKli2ZuCQbnu/zoiv2xuAGD/JnxBqu",
+        "app.bank.webhook.signing-secret=test-webhook-secret",
+        "app.bank.webhook.project-id=30000000-0000-0000-0000-000000000001" })
 class DatabaseMigrationIT {
     private static final String PROJECT_ID = "30000000-0000-0000-0000-000000000001";
     @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6-alpine")

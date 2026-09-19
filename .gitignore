@@ -27,7 +27,8 @@ build/
 compose.override.yaml
 docker-compose.override.yml
 
-# Local AI guidance and working checklists — never commit
+# Local project guidance and working notes — never commit
 AI_RULES.md
 *CHECKLIST*.md
 DEFINITION_OF_DONE.md
+prebuildsummary.md

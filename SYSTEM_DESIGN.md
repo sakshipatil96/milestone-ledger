@@ -42,11 +42,15 @@ All boxes except the bank and database are modules in the same application. The 
 
 Authorize certifier → validate amount/reference → lock milestone → save certification facts and demand → commit. A unique milestone constraint prevents duplicate demands. An idempotency key makes response-loss retries safe.
 
+**Implemented Day 2 boundary:** the actor/operation/key row is inserted with PostgreSQL `ON CONFLICT DO NOTHING`; a conflicting request then locks and reads the existing row. A completed matching request replays its stored status/body. A new request locks the scoped milestone, writes certification facts, demand, audit event, and completed idempotency response in one transaction. The runtime role has only certification-column update privileges, and a trigger prevents later posted-fact changes.
+
 ### Webhook and receipt processing
 
 1. Verify HMAC over the timestamp and raw body before parsing. Reject timestamps outside a five-minute tolerance. The simulator re-signs each retry with a fresh delivery timestamp.
 2. Validate and map the minimal receipt data to the configured bank account/project/client. Do not trust a caller-supplied project identifier.
 3. Insert an inbox row, unique by `(source, event_id)`, and commit before returning `202`. Same event ID with changed canonical receipt fields is a conflict; never overwrite the original.
+
+**Implemented Day 2 stopping point:** steps 1–3 only. The accepted event is visibly `PENDING`; no receipt, financial entry, allocation, exception, worker, or event processing state is fabricated before Day 3.
 4. Worker selects one due row with `FOR UPDATE SKIP LOCKED` and holds its lock during the short database-only processing transaction. No external call occurs inside it.
 5. Insert receipt under unique `(source, bank_receipt_id)`. If it already exists, compare canonical fields: identical means a no-op; different means a bank-record conflict exception, without another receipt or allocation.
 6. For a new receipt, append a `RECEIPT` entry. Lock its receipt row, then the matching demand row. Recompute balances under locks and append an allocation for `min(unallocated, outstanding)`.

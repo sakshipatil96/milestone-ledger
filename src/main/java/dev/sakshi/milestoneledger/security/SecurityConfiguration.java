@@ -17,6 +17,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.www.BasicAuthenticationEntryPoint;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(AppSecurityProperties.class)
@@ -47,10 +49,15 @@ public class SecurityConfiguration {
 
     @Bean
     SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper objectMapper) throws Exception {
+        CookieCsrfTokenRepository csrfTokens = CookieCsrfTokenRepository.withHttpOnlyFalse();
         return http
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/actuator/health/**", "/livez", "/readyz", "/api/v1/health/**").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/v1/webhooks/bank").permitAll()
                         .anyRequest().authenticated())
+                .csrf(csrf -> csrf.csrfTokenRepository(csrfTokens)
+                        .ignoringRequestMatchers(PathPatternRequestMatcher.pathPattern(
+                                org.springframework.http.HttpMethod.POST, "/api/v1/webhooks/bank")))
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint(authenticationEntryPoint(objectMapper))
                         .accessDeniedHandler(new JsonAccessDeniedHandler(objectMapper)))
