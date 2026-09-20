@@ -143,9 +143,11 @@ public class CertificationService {
     @PreAuthorize("hasAnyRole('CERTIFIER', 'ACCOUNTS', 'MANAGER')")
     public CertificationResponse.DemandResponse demand(UUID demandId) {
         return jdbcTemplate.query("""
-                select id, milestone_id, project_id, reference, amount_paise, due_date
-                from demand where id = ? and project_id = ?
-                """, (rs, rowNumber) -> demand(rs), demandId, setupProperties.projectId()).stream().findFirst()
+                select d.id, d.milestone_id, d.project_id, d.reference, d.amount_paise, d.due_date,
+                       coalesce((select sum(e.amount_paise) from financial_entry e where e.demand_id = d.id
+                                 and e.kind in ('ALLOCATION', 'ALLOCATION_REVERSAL')), 0) as allocated_paise
+                from demand d where d.id = ? and d.project_id = ?
+                """, (rs, rowNumber) -> currentDemand(rs), demandId, setupProperties.projectId()).stream().findFirst()
                 .orElseThrow(CertificationService::notFound);
     }
 
@@ -160,6 +162,22 @@ public class CertificationService {
         return new CertificationResponse.DemandResponse(rs.getObject("id", UUID.class), rs.getObject("milestone_id", UUID.class),
                 rs.getObject("project_id", UUID.class), rs.getString("reference"), Long.toString(amount), "0",
                 Long.toString(amount), "INR", "OPEN", rs.getObject("due_date", LocalDate.class));
+    }
+
+    private static CertificationResponse.DemandResponse currentDemand(ResultSet rs) throws SQLException {
+        long amount = rs.getLong("amount_paise");
+        long allocated = exactAggregate(rs.getBigDecimal("allocated_paise"));
+        if (allocated < 0 || allocated > amount) throw new IllegalStateException("invalid demand ledger balance");
+        long outstanding = amount - allocated;
+        String status = allocated == 0 ? "OPEN" : outstanding == 0 ? "SETTLED" : "PARTIALLY_PAID";
+        return new CertificationResponse.DemandResponse(rs.getObject("id", UUID.class), rs.getObject("milestone_id", UUID.class),
+                rs.getObject("project_id", UUID.class), rs.getString("reference"), Long.toString(amount), Long.toString(allocated),
+                Long.toString(outstanding), "INR", status, rs.getObject("due_date", LocalDate.class));
+    }
+
+    private static long exactAggregate(java.math.BigDecimal value) {
+        try { return value.longValueExact(); }
+        catch (ArithmeticException exception) { throw new IllegalStateException("ledger aggregate exceeds supported range", exception); }
     }
 
     private UUID activeCertifier() {

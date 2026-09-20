@@ -5,7 +5,7 @@
 - PostgreSQL; UUID primary keys, `timestamptz` UTC timestamps. Fields below omit `id` where obvious.
 - Money uses signed `bigint` paise, serialized as decimal strings in JSON. Inputs must fit `bigint`; use checked arithmetic. INR only. Demand, receipt, and allocation inputs are strictly positive.
 - References are case-sensitive exact strings. Reject leading/trailing whitespace; do not apply fuzzy normalization.
-- Posted certification facts cannot be changed by the runtime database role: column grants limit it to the one certification transition, and a database trigger rejects later fact changes. Receipt and financial-entry immutability are Day 3 work because those tables do not yet exist. Migrations use a separate privileged role.
+- Posted certification and receipt facts are immutable. Runtime grants permit receipt row locking only; receipt trigger protection and financial-entry privilege revocation prevent fact mutation. Migrations use a separate privileged role.
 - For receipt `r`: `unallocated(r) = receipt.amount - SUM(allocation effects for r)`.
 - For demand `d`: `outstanding(d) = demand.amount - SUM(allocation effects for d)`.
 - `ALLOCATION` effects are positive; `ALLOCATION_REVERSAL` effects are negative. Both balances must remain nonnegative. Receipt money equals net allocated plus unallocated money.
@@ -19,10 +19,10 @@
 | `project` | `client_id`, unique `code`, `name`, `currency='INR'`. |
 | `milestone` | `project_id`, `sequence`, `name`, nullable `certified_amount_paise`, `certification_reference`, `certified_at`, `certified_by`. Certification fields are all null or all populated. |
 | `demand` | `milestone_id`, `project_id`, unique `reference`, `amount_paise`, optional `due_date`, `created_at`. Amount equals the certified amount at creation. |
-| `inbox_event` | **Implemented Day 2:** `source`, `event_id`, trusted `project_id`/`account_reference`, normalized bank receipt ID/amount/currency/reference/post time, `canonical_hash`, `status`, retry metadata, and timestamps. No receipt foreign key exists yet. |
-| `receipt` | **Planned Day 3:** `source`, `bank_receipt_id`, `project_id`, `amount_paise`, `currency`, nullable `demand_reference`, `posted_at`, `recorded_at`, `canonical_hash`. |
-| `financial_entry` | `kind`, `receipt_id`, nullable `demand_id`, signed `amount_paise`, nullable `reverses_entry_id`, `actor_id`, `reason`, optional `inbox_event_id`, `created_at`. |
-| `exception_case` | `type`, `project_id`, optional `receipt_id`, optional `source`/`bank_receipt_id`, unique `dedupe_key`, `status`, `reason_code`, `first_seen_at`, `last_seen_at`, optional `resolved_at`. Do not store a separate authoritative unallocated amount. |
+| `inbox_event` | Delivery `event_id`, trusted project/account and normalized bank facts, nullable exact reference, original delivery replay hash, nullable receipt link, origin, retry metadata, and timestamps. V5 rows retain their hash and become `WEBHOOK` origin without rewriting facts. |
+| `receipt` | Implemented immutable facts: unique `(source, bank_receipt_id)`, trusted project, positive INR amount, nullable reference, posting/recording timestamps, and an independent receipt-fact hash. |
+| `financial_entry` | Implemented append-only `RECEIPT`, `ALLOCATION`, and future-compatible `ALLOCATION_REVERSAL` shapes. One positive receipt entry exists per receipt; allocation effects derive balances. |
+| `exception_case` | Implemented deduplicated residual-funds and bank-record-conflict cases with lifecycle/timestamps and receipt/bank identity links. Do not store an authoritative residual amount. |
 | `audit_event` | `actor_id`, `action`, `entity_type`, `entity_id`, optional `reason`, `request_id`, `created_at`. Append-only; excludes raw sensitive payloads. Includes exception notes and transitions. |
 | `reconciliation_run` | `source`, `project_id`, `status`, nullable `snapshot_id`/`as_of`/`next_cursor`, `lease_until`, `attempt_count`, `bank_count`, `recovered_count`, `conflict_count`, `failed_count`, `started_at`, `finished_at`, `error_code`. |
 | `reconciliation_item` | `run_id`, `bank_receipt_id`, canonical receipt JSON/hash, nullable `inbox_event_id`, `outcome`. Durable staging and recovery tracking. |
@@ -67,6 +67,8 @@ Exception types: `UNALLOCATED_FUNDS` with reasons `MISSING_REFERENCE`, `UNKNOWN_
 - Unique `exception_case(dedupe_key)`; index `(project_id, status, first_seen_at, id)`. Residual-funds key is receipt ID plus type; discrepancy key is source/bank receipt ID plus type.
 - Unique `reconciliation_item(run_id, bank_receipt_id)`; partial unique active run `(source, project_id) WHERE status IN ('QUEUED','RUNNING')`.
 - Unique `idempotency_request(actor_id, operation, key)`; index audit events by entity and time.
+
+V6 follows V5 without editing applied migrations: it relaxes only the inbox reference nullability, adds a check rejecting supplied blank/padded references, creates receipts/entries/exceptions, and adds receipt linkage. V7 grants `UPDATE(id)` on demand solely for PostgreSQL row locking; a trigger rejects actual demand fact changes. Runtime `UPDATE(id)` on receipt similarly enables `FOR UPDATE`, while its trigger rejects posted-fact changes. Runtime can read/insert financial entries but cannot update/delete them, and can update only operational inbox/exception columns. Owners retain migration authority. Receipt and demand balances are derived with exact aggregate conversion; the API rejects out-of-range or negative/over-amount ledger states rather than truncating them.
 
 ## Optional outbox extension
 

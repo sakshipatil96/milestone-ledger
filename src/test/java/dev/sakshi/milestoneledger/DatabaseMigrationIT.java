@@ -10,12 +10,16 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.time.Instant;
+import java.sql.Timestamp;
 import java.util.Base64;
 import java.util.List;
+import java.util.UUID;
 
 import dev.sakshi.milestoneledger.setup.SetupQueryService;
 import dev.sakshi.milestoneledger.shared.validation.ValidationRules;
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -38,7 +42,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         "app.security.accounts-password-hash=$2y$10$NdIazdiUe88vtpMK8FnE.O1BKli2ZuCQbnu/zoiv2xuAGD/JnxBqu",
         "app.security.manager-password-hash=$2y$10$NdIazdiUe88vtpMK8FnE.O1BKli2ZuCQbnu/zoiv2xuAGD/JnxBqu",
         "app.bank.webhook.signing-secret=test-webhook-secret",
-        "app.bank.webhook.project-id=30000000-0000-0000-0000-000000000001" })
+        "app.bank.webhook.project-id=30000000-0000-0000-0000-000000000001",
+        "app.receipt-worker.initial-delay-ms=60000" })
 class DatabaseMigrationIT {
     private static final String PROJECT_ID = "30000000-0000-0000-0000-000000000001";
     @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6-alpine")
@@ -116,6 +121,76 @@ class DatabaseMigrationIT {
         assertThatThrownBy(() -> ValidationRules.addPaise(Long.MAX_VALUE, 1)).isInstanceOf(RuntimeException.class);
         assertThat(ValidationRules.exactReference("Ref-A")).isEqualTo("Ref-A");
         assertThatThrownBy(() -> ValidationRules.exactReference(" Ref-A")).isInstanceOf(RuntimeException.class);
+    }
+
+    @Test void receiptAndLedgerFactsAreConstrainedAndRuntimeCannotRewriteThem() throws Exception {
+        UUID receiptId = UUID.randomUUID();
+        jdbcTemplate.update("""
+                insert into receipt (id, source, bank_receipt_id, project_id, amount_paise, currency, posted_at, fact_hash)
+                values (?, 'fixture', ?, ?::uuid, 100, 'INR', ?, repeat('0', 64))
+                """, receiptId, "bank-schema-" + receiptId, PROJECT_ID, Timestamp.from(Instant.now()));
+        assertThat(jdbcTemplate.queryForObject("select id from receipt where id = ? for update", UUID.class, receiptId)).isEqualTo(receiptId);
+        UUID systemActor = UUID.fromString("10000000-0000-0000-0000-000000000004");
+        jdbcTemplate.update("""
+                insert into financial_entry (kind, receipt_id, amount_paise, actor_id, reason)
+                values ('RECEIPT', ?, 100, ?, 'SCHEMA_TEST')
+                """, receiptId, systemActor);
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into financial_entry (kind, receipt_id, amount_paise, actor_id, reason)
+                values ('RECEIPT', ?, 100, ?, 'DUPLICATE')
+                """, receiptId, systemActor)).isInstanceOf(Exception.class);
+        assertThatThrownBy(() -> jdbcTemplate.update("""
+                insert into financial_entry (kind, receipt_id, amount_paise, actor_id, reason)
+                values ('ALLOCATION', ?, -1, ?, 'BAD_SHAPE')
+                """, receiptId, systemActor)).isInstanceOf(Exception.class);
+        assertThatThrownBy(() -> jdbcTemplate.update("update receipt set amount_paise = 101 where id = ?", receiptId)).isInstanceOf(Exception.class);
+        assertThatThrownBy(() -> jdbcTemplate.update("delete from receipt where id = ?", receiptId)).isInstanceOf(Exception.class);
+        assertThatThrownBy(() -> jdbcTemplate.update("update financial_entry set amount_paise = 101 where receipt_id = ?", receiptId)).isInstanceOf(Exception.class);
+        assertThatThrownBy(() -> jdbcTemplate.update("delete from financial_entry where receipt_id = ?", receiptId)).isInstanceOf(Exception.class);
+        try (Connection owner = ownerConnection(); var statement = owner.prepareStatement("update receipt set amount_paise = 101 where id = ?")) {
+            statement.setObject(1, receiptId);
+            assertThatThrownBy(statement::executeUpdate).isInstanceOf(Exception.class);
+        }
+    }
+
+    @Test void v5PendingInboxRowsSurviveTheDay3Upgrade() throws Exception {
+        String schema = "upgrade_" + UUID.randomUUID().toString().replace('-', '_');
+        Flyway.configure().dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .schemas(schema).defaultSchema(schema).target(MigrationVersion.fromVersion("5")).load().migrate();
+        UUID eventId = UUID.randomUUID();
+        try (Connection owner = ownerConnection(); var statement = owner.createStatement()) {
+            statement.execute("set search_path to " + schema);
+            try (var insert = owner.prepareStatement("""
+                    insert into inbox_event (id, source, event_id, project_id, account_reference, bank_receipt_id,
+                        amount_paise, currency, demand_reference, posted_at, canonical_hash)
+                    values (?, 'fixture', ?, ?::uuid, 'trusted-account', ?, 100, 'INR', 'DEM-OLD', now(), repeat('0', 64))
+                    """)) {
+                insert.setObject(1, eventId);
+                insert.setString(2, "old-delivery-" + eventId);
+                insert.setString(3, PROJECT_ID);
+                insert.setString(4, "old-bank-" + eventId);
+                insert.executeUpdate();
+            }
+        }
+        Flyway.configure().dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .schemas(schema).defaultSchema(schema).load().migrate();
+        try (Connection owner = ownerConnection(); var statement = owner.createStatement()) {
+            statement.execute("set search_path to " + schema);
+            try (var row = statement.executeQuery("select status, demand_reference, origin, receipt_id, canonical_hash from inbox_event where id = '" + eventId + "'")) {
+                assertThat(row.next()).isTrue();
+                assertThat(row.getString("status")).isEqualTo("PENDING");
+                assertThat(row.getString("demand_reference")).isEqualTo("DEM-OLD");
+                assertThat(row.getString("origin")).isEqualTo("WEBHOOK");
+                assertThat(row.getObject("receipt_id")).isNull();
+                assertThat(row.getString("canonical_hash")).isEqualTo("0".repeat(64));
+            }
+            statement.executeUpdate("""
+                    insert into inbox_event (source, event_id, project_id, account_reference, bank_receipt_id,
+                        amount_paise, currency, demand_reference, posted_at, canonical_hash)
+                    values ('fixture', 'null-reference-upgrade-check', '30000000-0000-0000-0000-000000000001',
+                        'trusted-account', 'null-bank-upgrade-check', 1, 'INR', null, now(), repeat('0', 64))
+                    """);
+        }
     }
 
     private HttpResponse<String> get(String path, String username, String password, String requestId) throws Exception {

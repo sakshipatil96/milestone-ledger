@@ -6,7 +6,7 @@ This is a synthetic-data portfolio prototype inspired by a contractor workflow. 
 
 ## Current status
 
-Day 2 completes certification and demand creation as a transactionally verified vertical slice. It uses separate migration/runtime database identities, BCrypt-configured HTTP Basic demo identities, CSRF-protected browser-style mutations, correlated errors, PostgreSQL-backed readiness, and signed durable bank-event acceptance. Receipt processing is intentionally still in progress: accepted events remain `PENDING`.
+Day 3 adds a database-backed receipt worker to the certified-demand slice. Signed deliveries are durably accepted, then processed with immutable receipt/financial-entry facts, exact-reference allocation, visible residual/conflict exceptions, duplicate receipt protection, and retryable failure metadata.
 
 ## Planned stack
 
@@ -27,7 +27,7 @@ AI guidance and working checklists are intentionally local-only and excluded fro
 
 ## Current proof and boundary
 
-The Day 2 demo certifies one scheduled ₹1,00,000 milestone, creates one `OPEN` demand, proves idempotent replay and authorization failures, then signs and stores a fictional bank notification as `PENDING`. It does not process receipts, allocate money, or run reconciliation; those are Day 3 features.
+The demo certifies one scheduled ₹1,00,000 milestone, then sends signed synthetic notifications and polls each inbox event to a terminal state. It asserts a ₹40,000 partial payment, five deliveries with one financial effect, a final receipt that settles the demand with ₹10,000 excess, two distinct equal-value receipts, missing/unknown references, and a changed bank record that creates a conflict without altering posted money. Reconciliation and manual allocation remain out of scope.
 
 ## Scope boundaries
 
@@ -58,7 +58,7 @@ All Compose-published ports bind to `127.0.0.1`. The legacy actuator probes and 
 
 ## Setup demo
 
-Supply raw credentials from your shell, then run the persisted-response demo. It checks readiness, reads projects and milestones for certifier/accounts/manager, and confirms missing and invalid credentials return `401`.
+Supply raw credentials and the webhook signing secret from your shell, then run the persisted-response demo. It requires `jq`, `curl`, and `openssl`; the script contains no credential or signing value. It checks setup/authentication, certification replay, signed receipt processing, derived balances, financial history, and visible exceptions. Run it against a fresh synthetic database with a scheduled milestone.
 
 ```bash
 export CERTIFIER_PASSWORD='...'
@@ -84,8 +84,8 @@ The Maven Wrapper runs unit tests and PostgreSQL integration tests. Docker Deskt
 ./mvnw verify
 ```
 
-The integration tests start isolated PostgreSQL 17 containers, apply every migration with the owner identity, run the application with the restricted runtime identity, and cover setup regression behavior plus CSRF-protected certification/idempotency and signed pending-webhook acceptance.
+The integration tests start isolated PostgreSQL 17 containers, apply migrations with the owner identity, run the application with the restricted runtime identity, and cover Day 1/2 regressions, V5-to-Day-3 upgrade, signed webhook acceptance, processing/locking, rollback, retry, and operational APIs.
 
 ## Latest verification evidence
 
-Latest verification passed `./mvnw verify` with PostgreSQL 17 Testcontainers: `AppSecurityPropertiesTest`, `JsonAccessDeniedHandlerTest`, `CorrelationIdFilterTest`, `ApiExceptionHandlerTest`, `BankWebhookServiceTest`, `DatabaseMigrationIT`, and `CertificationAndIngestionIT` (19 tests total). The integration suite applies V1–V5 to clean databases, safely re-applies migrations to an existing Day 1 fixture, and verifies CSRF, certification/idempotency, real PostgreSQL concurrency, runtime immutability, transaction rollback at certification/demand/audit boundaries, HMAC acceptance/replay/conflict, malformed and concurrent webhook handling, database-unavailable refusal, and pending-event persistence through a fresh application context. The credential-dependent Compose demo was also run successfully with local external credentials. Do not treat receipt processing as verified until its Day 3 combined gate is complete.
+On 2026-09-19, `./mvnw verify` passed locally with PostgreSQL 17 Testcontainers (35 tests, no failures/errors). The isolated Compose project `milestone_ledger_day3_verify` built and started on alternate localhost ports without touching developer volumes; `demo/setup-read.sh` passed with externally supplied synthetic credentials. Restarting only its app container preserved the settled demand and open exceptions. A second signed event was deliberately paused inside a financial-entry transaction; killing the isolated app left its inbox row `PENDING` with no receipt link, and restarting processed it into one receipt entry. The temporary trigger was removed afterward.
