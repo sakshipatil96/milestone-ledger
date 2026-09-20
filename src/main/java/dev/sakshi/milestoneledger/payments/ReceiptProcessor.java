@@ -2,7 +2,6 @@ package dev.sakshi.milestoneledger.payments;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -25,10 +24,12 @@ public class ReceiptProcessor {
     private static final UUID SYSTEM_ACTOR = UUID.fromString("10000000-0000-0000-0000-000000000004");
     private final JdbcTemplate jdbc;
     private final Clock clock;
+    private final PaymentAllocationService allocationService;
 
-    public ReceiptProcessor(JdbcTemplate jdbc, Clock clock) {
+    public ReceiptProcessor(JdbcTemplate jdbc, Clock clock, PaymentAllocationService allocationService) {
         this.jdbc = jdbc;
         this.clock = clock;
+        this.allocationService = allocationService;
     }
 
     @Transactional
@@ -97,19 +98,11 @@ public class ReceiptProcessor {
                 residualReason = "UNKNOWN_REFERENCE";
             } else {
                 matchingDemandId = demand.id();
-                if (!demand.projectId().equals(receipt.projectId()) || !"INR".equals(receipt.currency())) {
-                    throw new IllegalStateException("receipt and demand scope mismatch");
-                }
-                long receiptAvailable = receipt.amount() - allocatedForReceipt(receipt.id());
-                long demandOutstanding = demand.amount() - allocatedForDemand(demand.id());
-                if (receiptAvailable < 0 || demandOutstanding < 0) throw new IllegalStateException("negative ledger balance");
-                allocated = Math.min(receiptAvailable, demandOutstanding);
-                if (allocated > 0) {
-                    jdbc.update("""
-                            insert into financial_entry (kind, receipt_id, demand_id, amount_paise, actor_id, reason, inbox_event_id)
-                            values ('ALLOCATION', ?, ?, ?, ?, 'AUTOMATIC_EXACT_REFERENCE', ?)
-                            """, receipt.id(), demand.id(), allocated, SYSTEM_ACTOR, event.id());
-                }
+                PaymentAllocationService.Receipt lockedReceipt = allocationService.lockReceipt(receipt.id(), receipt.projectId());
+                PaymentAllocationService.Demand lockedDemand = allocationService.lockDemand(demand.id(), receipt.projectId());
+                PaymentAllocationService.Allocation applied = allocationService.allocate(lockedReceipt, lockedDemand,
+                        Long.MAX_VALUE, SYSTEM_ACTOR, "AUTOMATIC_EXACT_REFERENCE", event.id(), false);
+                allocated = applied.amount();
                 residualReason = allocated == receipt.amount() ? null : "EXCESS_PAYMENT";
             }
         }
@@ -155,18 +148,6 @@ public class ReceiptProcessor {
         return exceptionId;
     }
 
-    private long allocatedForReceipt(UUID receiptId) {
-        BigDecimal value = jdbc.queryForObject("select coalesce(sum(amount_paise), 0) from financial_entry where receipt_id = ? and kind in ('ALLOCATION', 'ALLOCATION_REVERSAL')", BigDecimal.class, receiptId);
-        return exactAggregate(value);
-    }
-    private long allocatedForDemand(UUID demandId) {
-        BigDecimal value = jdbc.queryForObject("select coalesce(sum(amount_paise), 0) from financial_entry where demand_id = ? and kind in ('ALLOCATION', 'ALLOCATION_REVERSAL')", BigDecimal.class, demandId);
-        return exactAggregate(value);
-    }
-    private static long exactAggregate(BigDecimal value) {
-        try { return value.longValueExact(); }
-        catch (ArithmeticException exception) { throw new IllegalStateException("ledger aggregate exceeds supported range", exception); }
-    }
     private static void validatePersisted(Event event) {
         if (event.id() == null || event.projectId() == null || event.accountReference() == null
                 || event.accountReference().isBlank() || event.source() == null || event.source().isBlank()

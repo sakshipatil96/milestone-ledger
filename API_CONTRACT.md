@@ -13,14 +13,19 @@ Local demo users authenticate with HTTP Basic using externally configured BCrypt
 | `GET /csrf-token` | Authenticated | Returns a CSRF token and sets the `XSRF-TOKEN` cookie. |
 | `POST /milestones/{milestoneId}/certification` | Certifier + CSRF | Creates certification and exactly one demand atomically. |
 | `GET /demands/{demandId}` | All three roles | Demand facts plus current ledger-derived allocation, outstanding amount, and status. |
+| `GET /demands` | All three roles | Keyset-paginated demand worklist with current balances and ingestion lag. |
 | `POST /webhooks/bank` | HMAC | Commits a normalized inbox event and returns it as `PENDING`. |
 | `GET /ingestion-events/{eventId}`, `GET /ingestion-events` | Manager | Inspect an event or a bounded status-filtered operational list. |
 | `POST /ingestion-events/{eventId}/retry` | Manager + CSRF | Reset one failed event with a reason and an idempotency key. |
 | `GET /receipts/{receiptId}` | All three roles | Immutable receipt facts and ledger-derived allocated/unallocated balances. |
+| `GET /receipts` | All three roles | Keyset-paginated receipt worklist with current balances and ingestion lag. |
 | `GET /financial-entries?receiptId=...` or `?demandId=...` | All three roles | Immutable history; exactly one filter is required. |
 | `GET /exceptions` | All three roles | Scoped visible residual-fund and receipt-conflict cases. |
+| `POST /receipts/{receiptId}/allocations` | Accounts/manager + CSRF | Allocates evidenced receipt funds to one demand atomically. |
+| `POST /exceptions/{exceptionId}/notes` | Accounts/manager + CSRF | Appends an investigation note without changing money or case state. |
+| `GET /exceptions/{exceptionId}/notes` | All three roles | Paginated append-only investigation history. |
 
-Automatic receipt processing is implemented. Reconciliation, manual allocation/reversal, notes, and collections worklists remain later scope.
+Automatic receipt processing, manual allocation, investigation notes, and collections worklists are implemented. Reconciliation and allocation reversal remain later scope.
 
 ## CSRF workflow
 
@@ -76,9 +81,15 @@ Receipt comparison is independent of delivery IDs and the old inbox replay hash.
 
 `GET /receipts/{receiptId}` returns immutable `id`, `source`, `bankReceiptId`, `projectId`, string `amountPaise`, `currency`, nullable `demandReference`, `postedAt`, `recordedAt`, and derived string `allocatedPaise`/`unallocatedPaise` and `status` (`UNALLOCATED`, `PARTIALLY_ALLOCATED`, `ALLOCATED`). A receipt always has one `RECEIPT` history entry; allocation entries do not add to inflow totals.
 
-`GET /financial-entries?receiptId=<UUID>` or `?demandId=<UUID>` requires exactly one filter. It returns the page wrapper with entry objects containing `id`, `kind`, `receiptId`, nullable `demandId`, string `amountPaise`, nullable `inboxEventId`, `reason`, and `createdAt`. `kind` is currently `RECEIPT` or `ALLOCATION`; the schema also reserves `ALLOCATION_REVERSAL` for later work, but no reversal action exists now.
+`GET /demands` accepts repeated `status=OPEN|PARTIALLY_PAID|SETTLED`; `GET /receipts` accepts repeated `status=UNALLOCATED|PARTIALLY_ALLOCATED|ALLOCATED`. Both accept optional `projectId` (the configured project only), `limit` (default 50, maximum 100), and a filter-bound keyset `cursor`. Demand and receipt worklists return `items`, `nextCursor`, and `ingestion`: `{pendingCount,failedCount,oldestPendingReceivedAt,asOf}`. Counts describe accepted ingestion work, not bank completeness; reconciliation freshness is deferred to ML-10. Every individual response is calculated under one read-only repeatable-read snapshot; separate paginated requests do not share a frozen snapshot.
 
-`GET /exceptions?status=OPEN|RESOLVED` returns the same page wrapper around `id`, `type`, nullable `receiptId`, `source`, `bankReceiptId`, `reasonCode`, `status`, nullable string `residualAmountPaise`, `firstSeenAt`, `lastSeenAt`, and `supportedActions`. Types currently exposed are `UNALLOCATED_FUNDS` and `BANK_RECORD_CONFLICT`; reasons include `MISSING_REFERENCE`, `UNKNOWN_REFERENCE`, `EXCESS_PAYMENT`, and `FACTS_CHANGED`. Residual amount is derived from the linked receipt rather than stored. `supportedActions` is an empty array in Day 3: no note, allocation, or resolution action is callable yet.
+`GET /financial-entries?receiptId=<UUID>` or `?demandId=<UUID>` requires exactly one filter. It validates the scoped resource before returning a page, so missing resources return 404 while an existing resource with no history returns an empty page. Entries also expose `actorId` and `actorDisplayName`.
+
+`GET /exceptions?status=OPEN|RESOLVED` returns the same page wrapper around `id`, `type`, nullable `receiptId`, `source`, `bankReceiptId`, `reasonCode`, `status`, nullable string `residualAmountPaise`, `firstSeenAt`, `lastSeenAt`, and `supportedActions`. A residual is `null` when no receipt applies. `POST /receipts/{receiptId}/allocations` takes exactly `{"demandId":"<UUID>","amountPaise":"4000000","reason":"evidence"}` and a nonblank `Idempotency-Key`; it returns 201 with the allocation and post-allocation receipt/demand snapshots. It rejects receipt insufficiency first with `409 ALLOCATION_EXCEEDS_UNALLOCATED`, then demand insufficiency with `409 ALLOCATION_EXCEEDS_OUTSTANDING`. Exact replay returns the stored response; a changed use of the key returns `409 IDEMPOTENCY_KEY_REUSED`. Allocation cannot be reversed in this five-day MVP.
+
+`supportedActions` includes `ADD_NOTE` for accounts and managers. It also includes `ALLOCATE` for an open residual-funds case with a positive receipt residual. Certifiers receive no mutation actions. A bank-record conflict never gains `ALLOCATE` through its own case and is not resolved by allocation.
+
+`POST /exceptions/{exceptionId}/notes` takes exactly `{"reason":"investigation evidence"}` plus a nonblank `Idempotency-Key` and returns 201 with the persisted audit-note record. Notes may be added to open or resolved cases, never alter balances or close bank conflicts, and are returned by `GET /exceptions/{exceptionId}/notes?limit=&cursor=`.
 
 All three new collections use project-scoped keyset pagination: optional `limit` defaults to 50 and must be 1–100; an opaque `cursor` is bound to that collection/filter. Malformed or mismatched cursors, invalid filters/IDs, and wrong filter combinations return `400 VALIDATION_ERROR`. Unknown or out-of-scope resources return `404 NOT_FOUND`.
 

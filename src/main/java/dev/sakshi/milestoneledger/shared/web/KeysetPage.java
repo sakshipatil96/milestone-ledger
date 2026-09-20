@@ -39,9 +39,13 @@ public final class KeysetPage {
         boolean hasMore = rows.size() > limit;
         List<T> items = hasMore ? rows.subList(0, limit) : rows;
         T last = hasMore ? items.getLast() : null;
-        String next = last == null ? null : Base64.getUrlEncoder().withoutPadding().encodeToString(
-                (timestamp.apply(last) + "|" + id.apply(last) + "|" + context).getBytes(StandardCharsets.UTF_8));
+        String next = last == null ? null : encode(timestamp.apply(last), id.apply(last), context);
         return new Response<>(items, next);
+    }
+
+    public static String encode(Instant timestamp, UUID id, String context) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(
+                (timestamp + "|" + id + "|" + context).getBytes(StandardCharsets.UTF_8));
     }
 
     private static ApiException invalid() {

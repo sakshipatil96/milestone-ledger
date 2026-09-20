@@ -12,6 +12,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
@@ -471,6 +472,7 @@ class CertificationAndIngestionIT {
         assertThat(get("/api/v1/ingestion-events", "accounts").statusCode()).isEqualTo(403);
         HttpResponse<String> entries = get("/api/v1/financial-entries?receiptId=" + receiptId + "&limit=1", "accounts");
         assertThat(entries.statusCode()).isEqualTo(200);
+        assertThat(entries.body()).contains("\"actorId\"", "\"actorDisplayName\"");
         String entryCursor = entries.body().replaceFirst(".*\\\"nextCursor\\\":\\\"([^\\\"]+)\\\".*", "$1");
         assertThat(entryCursor).isNotEqualTo(entries.body());
         assertThat(get("/api/v1/financial-entries?receiptId=" + receiptId + "&limit=1&cursor=" + entryCursor,
@@ -515,8 +517,17 @@ class CertificationAndIngestionIT {
             }
         }
         assertThat(get("/api/v1/receipts/" + receiptId, "accounts").statusCode()).isEqualTo(404);
-        assertThat(get("/api/v1/financial-entries?receiptId=" + receiptId, "manager").body()).contains("\"items\":[]");
+        assertThat(get("/api/v1/financial-entries?receiptId=" + receiptId, "manager").statusCode()).isEqualTo(404);
         assertThat(get("/api/v1/exceptions?status=OPEN", "certifier").body()).doesNotContain(bankId);
+        UUID exceptionId = jdbcTemplate.queryForObject("select id from exception_case where receipt_id=?",
+                UUID.class, receiptId);
+        assertThat(get("/api/v1/exceptions/" + exceptionId + "/notes", "accounts").statusCode()).isEqualTo(404);
+        Client accounts = client("accounts");
+        assertThat(postJson("/api/v1/exceptions/" + exceptionId + "/notes", accounts,
+                "{\"reason\":\"Evidence\"}", "scoped-note-" + UUID.randomUUID()).statusCode()).isEqualTo(404);
+        assertThat(postJson("/api/v1/receipts/" + receiptId + "/allocations", accounts,
+                allocationBody(UUID.randomUUID(), "1"), "scoped-allocation-" + UUID.randomUUID()).statusCode())
+                .isEqualTo(404);
     }
 
     @Test void certificationAndPendingInboxEventSurviveAFreshApplicationContext() throws Exception {
@@ -546,6 +557,522 @@ class CertificationAndIngestionIT {
             assertThat(get(port, "/api/v1/ingestion-events/" + ingestionEventId, "manager").body())
                     .containsAnyOf("\"status\":\"PENDING\"", "\"status\":\"PROCESSED\"");
         }
+    }
+
+    @Test void collectionsWorklistsAndManualAllocationKeepEvidenceAndResiduals() throws Exception {
+        drainReceiptWorker();
+        String reference = certifyDemand("10000000");
+        UUID demandId = jdbcTemplate.queryForObject("select id from demand where reference = ?", UUID.class, reference);
+        String bankId = "bank-manual-" + UUID.randomUUID();
+        acceptWebhook(receiptPayload("evt-manual-" + UUID.randomUUID(), bankId, "4000000", null));
+        drainReceiptWorker();
+        UUID receiptId = jdbcTemplate.queryForObject("select id from receipt where bank_receipt_id = ?", UUID.class, bankId);
+        UUID exceptionId = jdbcTemplate.queryForObject("select id from exception_case where receipt_id = ? and type = 'UNALLOCATED_FUNDS'", UUID.class, receiptId);
+        assertThat(get("/api/v1/demands?status=OPEN&status=PARTIALLY_PAID", "accounts").body()).contains("\"ingestion\"").contains(reference);
+        assertThat(get("/api/v1/receipts?status=UNALLOCATED", "accounts").body()).contains(bankId);
+        assertThat(get("/api/v1/exceptions?status=OPEN", "accounts").body()).contains("ALLOCATE", "ADD_NOTE");
+        assertThat(get("/api/v1/exceptions?status=OPEN", "certifier").body()).doesNotContain("\"ALLOCATE\"", "\"ADD_NOTE\"");
+
+        Client accounts = client("accounts");
+        String noteKey = "note-" + UUID.randomUUID();
+        HttpResponse<String> note = postJson("/api/v1/exceptions/" + exceptionId + "/notes", accounts,
+                "{\"reason\":\"Remittance advice received\"}", noteKey);
+        assertThat(note.statusCode()).isEqualTo(201);
+        assertThat(note.body()).contains("\"actorId\"", "\"createdAt\"");
+        String noteCreatedAt = note.body().replaceFirst(".*\"createdAt\":\"([^\"]+)\".*", "$1");
+        assertThat(get("/api/v1/exceptions/" + exceptionId + "/notes", "certifier").body())
+                .contains("Remittance advice received", "\"createdAt\":\"" + noteCreatedAt + "\"");
+        assertThat(postJson("/api/v1/exceptions/" + exceptionId + "/notes", client("manager"),
+                "{\"reason\":\"Manager reviewed the evidence\"}", "manager-note-" + UUID.randomUUID()).statusCode())
+                .isEqualTo(201);
+        assertThat(get("/api/v1/receipts/" + receiptId, "accounts").body()).contains("\"unallocatedPaise\":\"4000000\"");
+        assertThat(jdbcTemplate.queryForObject("select status from exception_case where id=?", String.class, exceptionId)).isEqualTo("OPEN");
+        acceptWebhook(receiptPayload("evt-manual-conflict-" + UUID.randomUUID(), bankId, "4000001", null));
+        drainReceiptWorker();
+        UUID conflictId = jdbcTemplate.queryForObject("select id from exception_case where receipt_id=? and type='BANK_RECORD_CONFLICT'", UUID.class, receiptId);
+
+        String body = "{\"demandId\":\"" + demandId + "\",\"amountPaise\":\"1500000\",\"reason\":\"Advice identifies demand\"}";
+        String key = "allocation-" + UUID.randomUUID();
+        HttpResponse<String> partial = postJson("/api/v1/receipts/" + receiptId + "/allocations", accounts, body, key);
+        assertThat(partial.statusCode()).isEqualTo(201);
+        assertThat(postJson("/api/v1/receipts/" + receiptId + "/allocations", accounts, body, key).body()).isEqualTo(partial.body());
+        assertThat(jdbcTemplate.queryForObject("select status from exception_case where id = ?", String.class, exceptionId)).isEqualTo("OPEN");
+        assertThat(jdbcTemplate.queryForObject("select count(*) from financial_entry where receipt_id = ? and kind = 'ALLOCATION'", Integer.class, receiptId)).isOne();
+        assertThat(get("/api/v1/receipts?status=PARTIALLY_ALLOCATED", "accounts").body()).contains(receiptId.toString());
+        assertThat(get("/api/v1/demands?status=PARTIALLY_PAID", "accounts").body()).contains(demandId.toString());
+
+        HttpResponse<String> finalAllocation = postJson("/api/v1/receipts/" + receiptId + "/allocations", accounts,
+                "{\"demandId\":\"" + demandId + "\",\"amountPaise\":\"2500000\",\"reason\":\"Remaining evidenced funds\"}", "allocation-final-" + UUID.randomUUID());
+        assertThat(finalAllocation.statusCode()).isEqualTo(201);
+        assertThat(jdbcTemplate.queryForObject("select status from exception_case where id = ?", String.class, exceptionId)).isEqualTo("RESOLVED");
+        assertThat(jdbcTemplate.queryForObject("select status from exception_case where id = ?", String.class, conflictId)).isEqualTo("OPEN");
+        assertThat(get("/api/v1/demands/" + demandId, "accounts").body()).contains("\"outstandingPaise\":\"6000000\"");
+        assertThat(get("/api/v1/receipts?status=ALLOCATED", "accounts").body()).contains(receiptId.toString());
+        assertThat(postJson("/api/v1/exceptions/" + exceptionId + "/notes", accounts,
+                "{\"reason\":\"Final evidence filed\"}", "resolved-note-" + UUID.randomUUID()).statusCode()).isEqualTo(201);
+        assertThat(jdbcTemplate.queryForObject("select status from exception_case where id = ?", String.class, exceptionId)).isEqualTo("RESOLVED");
+        assertThat(postJson("/api/v1/exceptions/" + conflictId + "/notes", client("certifier"),
+                "{\"reason\":\"Denied\"}", "denied-note-" + UUID.randomUUID()).statusCode()).isEqualTo(403);
+        try (ConfigurableApplicationContext restarted = freshApplication()) {
+            int port = ((WebServerApplicationContext) restarted).getWebServer().getPort();
+            Client restartedAccounts = client(port, "accounts");
+            assertThat(get(port, "/api/v1/exceptions/" + exceptionId + "/notes", "accounts").body()).contains("Remittance advice received");
+            assertThat(get(port, "/api/v1/demands/" + demandId, "accounts").body()).contains("\"outstandingPaise\":\"6000000\"");
+            assertThat(post(port, "/api/v1/receipts/" + receiptId + "/allocations", restartedAccounts, body, key).body()).isEqualTo(partial.body());
+            assertThat(post(port, "/api/v1/exceptions/" + exceptionId + "/notes", restartedAccounts,
+                    "{\"reason\":\"Remittance advice received\"}", noteKey).body()).isEqualTo(note.body());
+        }
+    }
+
+    @Test void manualAllocationRejectsInvalidAndOverBudgetRequestsWithoutCachingFailures() throws Exception {
+        ManualFixture fixture = manualFixture("100", "80");
+        Client accounts = client("accounts");
+        String path = "/api/v1/receipts/" + fixture.receiptId() + "/allocations";
+        String invalidKey = "invalid-" + UUID.randomUUID();
+        for (String body : List.of(
+                "{\"demandId\":\"" + fixture.demandId() + "\",\"amountPaise\":80,\"reason\":\"evidence\"}",
+                "{\"demandId\":\"" + fixture.demandId() + "\",\"amountPaise\":\"1.5\",\"reason\":\"evidence\"}",
+                "{\"demandId\":\"" + fixture.demandId() + "\",\"amountPaise\":\"1\",\"reason\":\"  \"}",
+                "{\"demandId\":\"" + fixture.demandId() + "\",\"amountPaise\":\"1\",\"reason\":\"evidence\",\"extra\":1}")) {
+            assertThat(postJson(path, accounts, body, invalidKey).statusCode()).isEqualTo(400);
+        }
+        assertThat(jdbcTemplate.queryForObject("select count(*) from idempotency_request where idempotency_key=?", Integer.class, invalidKey)).isZero();
+        assertThat(postJson(path, accounts, allocationBody(fixture.demandId(), "81"), "too-much-receipt-" + UUID.randomUUID()).body())
+                .contains("ALLOCATION_EXCEEDS_UNALLOCATED");
+        UUID smallDemand = jdbcTemplate.queryForObject("select id from demand where reference=?", UUID.class, certifyDemand("10"));
+        assertThat(postJson(path, accounts, allocationBody(smallDemand, "11"), "too-much-demand-" + UUID.randomUUID()).body())
+                .contains("ALLOCATION_EXCEEDS_OUTSTANDING");
+        assertThat(jdbcTemplate.queryForObject("select count(*) from financial_entry where receipt_id=? and kind='ALLOCATION'", Integer.class, fixture.receiptId())).isZero();
+        assertThat(postJson(path, client("certifier"), allocationBody(fixture.demandId(), "1"), "certifier-denied-" + UUID.randomUUID()).statusCode()).isEqualTo(403);
+        assertThat(post(path, "accounts", allocationBody(fixture.demandId(), "1"), "csrf-denied-" + UUID.randomUUID(), null).statusCode()).isEqualTo(403);
+    }
+
+    @Test void mutationBoundaryRejectsMissingKeysOverflowAndUnsafeReasonsWithoutEffects() throws Exception {
+        ManualFixture fixture = manualFixture("100", "80");
+        Client accounts = client("accounts");
+        String allocationPath = "/api/v1/receipts/" + fixture.receiptId() + "/allocations";
+        String notePath = "/api/v1/exceptions/" + fixture.exceptionId() + "/notes";
+        String validAllocation = allocationBody(fixture.demandId(), "1");
+        for (String body : List.of(
+                allocationBody(fixture.demandId(), "0"),
+                allocationBody(fixture.demandId(), "-1"),
+                allocationBody(fixture.demandId(), "9223372036854775808"),
+                "{\"demandId\":\"bad\",\"amountPaise\":\"1\",\"reason\":\"evidence\"}",
+                "{\"demandId\":\"" + fixture.demandId() + "\",\"amountPaise\":\"1\",\"reason\":\" evidence\"}",
+                "{\"demandId\":\"" + fixture.demandId() + "\",\"amountPaise\":\"1\",\"reason\":\"" + "x".repeat(501) + "\"}")) {
+            assertThat(postJson(allocationPath, accounts, body, "invalid-mutation-" + UUID.randomUUID()).statusCode())
+                    .as(body).isEqualTo(400);
+        }
+        HttpResponse<String> noKey = accounts.http().send(HttpRequest.newBuilder(uri(allocationPath))
+                .header("Authorization", basic("accounts")).header("X-XSRF-TOKEN", accounts.csrf())
+                .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(validAllocation))
+                .build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(noKey.statusCode()).isEqualTo(400);
+        assertThat(noKey.body()).contains("IDEMPOTENCY_KEY_REQUIRED");
+        assertThat(postJson(allocationPath, accounts, validAllocation, "k".repeat(201)).body())
+                .contains("IDEMPOTENCY_KEY_REQUIRED");
+        assertThat(postJson(allocationPath, accounts, allocationBody(UUID.randomUUID(), "1"),
+                "missing-demand-" + UUID.randomUUID()).statusCode()).isEqualTo(404);
+
+        for (String body : List.of("{}", "{\"reason\":\"  \"}",
+                "{\"reason\":\"note\",\"extra\":true}", "{\"reason\":\"" + "x".repeat(501) + "\"}")) {
+            assertThat(postJson(notePath, accounts, body, "invalid-note-" + UUID.randomUUID()).statusCode())
+                    .as(body).isEqualTo(400);
+        }
+        HttpResponse<String> noNoteKey = accounts.http().send(HttpRequest.newBuilder(uri(notePath))
+                .header("Authorization", basic("accounts")).header("X-XSRF-TOKEN", accounts.csrf())
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"reason\":\"evidence\"}"))
+                .build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(noNoteKey.statusCode()).isEqualTo(400);
+        assertThat(noNoteKey.body()).contains("IDEMPOTENCY_KEY_REQUIRED");
+        assertThat(post(notePath, "accounts", "{\"reason\":\"evidence\"}",
+                "csrf-note-" + UUID.randomUUID(), null).statusCode()).isEqualTo(403);
+        assertThat(jdbcTemplate.queryForObject("select count(*) from financial_entry where receipt_id=? and kind='ALLOCATION'",
+                Integer.class, fixture.receiptId())).isZero();
+        assertThat(jdbcTemplate.queryForObject("select count(*) from audit_event where action='EXCEPTION_NOTE' and entity_id=?",
+                Integer.class, fixture.exceptionId())).isZero();
+    }
+
+    @Test void concurrentManualRequestsCannotSpendSameReceiptTwice() throws Exception {
+        ManualFixture fixture = manualFixture("200", "100");
+        String path = "/api/v1/receipts/" + fixture.receiptId() + "/allocations";
+        String body = allocationBody(fixture.demandId(), "70");
+        Client accounts = client("accounts"), manager = client("manager");
+        try (Connection owner = ownerConnection(); Connection observer = ownerConnection();
+                ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            owner.setAutoCommit(false);
+            try (var lock = owner.prepareStatement("select id from receipt where id=? for update")) {
+                lock.setObject(1, fixture.receiptId());
+                lock.executeQuery().close();
+            }
+            var first = executor.submit(() -> postJson(path, accounts, body, "race-a-" + UUID.randomUUID()));
+            var second = executor.submit(() -> postJson(path, manager, body, "race-b-" + UUID.randomUUID()));
+            try {
+                assertThat(waitingRowLocks(observer, "receipt", 2)).isTrue();
+            } finally {
+                owner.commit();
+            }
+            List<Integer> statuses = List.of(first.get().statusCode(), second.get().statusCode());
+            assertThat(statuses).containsExactlyInAnyOrder(201, 409);
+        }
+        assertThat(jdbcTemplate.queryForObject("select sum(amount_paise) from financial_entry where receipt_id=? and kind='ALLOCATION'", Long.class, fixture.receiptId())).isEqualTo(70L);
+        assertThat(jdbcTemplate.queryForObject("select sum(amount_paise) from financial_entry where demand_id=? and kind='ALLOCATION'", Long.class, fixture.demandId())).isEqualTo(70L);
+    }
+
+    @Test void concurrentSameKeyReplaysOneAllocationAndDifferentReceiptsCannotOverpayDemand() throws Exception {
+        ManualFixture first = manualFixture("100", "100");
+        String path = "/api/v1/receipts/" + first.receiptId() + "/allocations";
+        String key = "same-key-race-" + UUID.randomUUID();
+        String body = allocationBody(first.demandId(), "30");
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            var a = executor.submit(() -> postJson(path, client("accounts"), body, key));
+            var b = executor.submit(() -> postJson(path, client("accounts"), body, key));
+            HttpResponse<String> aResult = a.get(), bResult = b.get();
+            assertThat(aResult.statusCode()).isEqualTo(201);
+            assertThat(bResult.statusCode()).isEqualTo(201);
+            assertThat(aResult.body()).isEqualTo(bResult.body());
+        }
+        assertThat(jdbcTemplate.queryForObject("select count(*) from financial_entry where receipt_id=? and kind='ALLOCATION'", Integer.class, first.receiptId())).isOne();
+
+        String bankId = "bank-demand-race-" + UUID.randomUUID();
+        acceptWebhook(receiptPayload("evt-demand-race-" + UUID.randomUUID(), bankId, "80", null));
+        drainReceiptWorker();
+        UUID secondReceipt = jdbcTemplate.queryForObject("select id from receipt where bank_receipt_id=?", UUID.class, bankId);
+        Client accounts = client("accounts"), manager = client("manager");
+        try (Connection owner = ownerConnection(); Connection observer = ownerConnection();
+                ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            owner.setAutoCommit(false);
+            try (var lock = owner.prepareStatement("select id from demand where id=? for update")) {
+                lock.setObject(1, first.demandId());
+                lock.executeQuery().close();
+            }
+            var a = executor.submit(() -> postJson(path, accounts, allocationBody(first.demandId(), "60"), "demand-a-" + UUID.randomUUID()));
+            var b = executor.submit(() -> postJson("/api/v1/receipts/" + secondReceipt + "/allocations", manager, allocationBody(first.demandId(), "60"), "demand-b-" + UUID.randomUUID()));
+            try {
+                assertThat(waitingRowLocks(observer, "demand", 2)).isTrue();
+            } finally {
+                owner.commit();
+            }
+            assertThat(List.of(a.get().statusCode(), b.get().statusCode())).containsExactlyInAnyOrder(201, 409);
+        }
+        assertThat(jdbcTemplate.queryForObject("select sum(amount_paise) from financial_entry where demand_id=? and kind='ALLOCATION'", Long.class, first.demandId())).isEqualTo(90L);
+        assertThat(jdbcTemplate.queryForObject("select coalesce(sum(amount_paise),0) from financial_entry where receipt_id=? and kind='ALLOCATION'", Long.class, secondReceipt)).isLessThanOrEqualTo(80L);
+    }
+
+    @Test void collectionCursorsAreFilterBoundAndNotesReplayWithoutChangingCase() throws Exception {
+        ManualFixture fixture = manualFixture("100", "80");
+        String demandPage = get("/api/v1/demands?status=OPEN&status=PARTIALLY_PAID&limit=1", "accounts").body();
+        String cursor = demandPage.replaceFirst(".*\"nextCursor\":\"([^\"]+)\".*", "$1");
+        assertThat(cursor).isNotEqualTo(demandPage);
+        assertThat(get("/api/v1/demands?status=PARTIALLY_PAID&status=OPEN&limit=1&cursor=" + cursor, "accounts").statusCode()).isEqualTo(200);
+        assertThat(get("/api/v1/demands?status=SETTLED&limit=1&cursor=" + cursor, "accounts").statusCode()).isEqualTo(400);
+        assertThat(get("/api/v1/receipts?cursor=invalid", "accounts").statusCode()).isEqualTo(400);
+        assertThat(get("/api/v1/receipts?projectId=30000000-0000-0000-0000-000000000099", "accounts").statusCode()).isEqualTo(404);
+        assertThat(get("/api/v1/financial-entries?receiptId=" + fixture.receiptId() + "&demandId=" + fixture.demandId(), "accounts").statusCode()).isEqualTo(400);
+
+        String path = "/api/v1/exceptions/" + fixture.exceptionId() + "/notes";
+        assertThat(get(path, "certifier").body()).contains("\"items\":[]");
+        assertThat(get("/api/v1/exceptions/" + UUID.randomUUID() + "/notes", "certifier").statusCode()).isEqualTo(404);
+        String key = "note-replay-" + UUID.randomUUID();
+        String body = "{\"reason\":\"Bank advice requested\"}";
+        Client accounts = client("accounts");
+        HttpResponse<String> original = postJson(path, accounts, body, key);
+        assertThat(original.statusCode()).isEqualTo(201);
+        assertThat(postJson(path, accounts, body, key).body()).isEqualTo(original.body());
+        assertThat(postJson(path, accounts, "{\"reason\":\"Different advice\"}", key).body()).contains("IDEMPOTENCY_KEY_REUSED");
+        assertThat(jdbcTemplate.queryForObject("select count(*) from audit_event where action='EXCEPTION_NOTE' and entity_id=?", Integer.class, fixture.exceptionId())).isOne();
+        assertThat(jdbcTemplate.queryForObject("select status from exception_case where id=?", String.class, fixture.exceptionId())).isEqualTo("OPEN");
+    }
+
+    @Test void collectionBoundariesDistinguishInvalidFiltersAndEmptyHistoryFromMissingResources() throws Exception {
+        ManualFixture fixture = manualFixture("100", "80");
+        String project = "30000000-0000-0000-0000-000000000001";
+        assertThat(get("/api/v1/demands?projectId=" + project + "&status=OPEN", "certifier").body())
+                .contains(fixture.demandId().toString());
+        assertThat(get("/api/v1/receipts?projectId=" + project + "&status=UNALLOCATED", "manager").body())
+                .contains(fixture.receiptId().toString());
+        for (String path : List.of("/api/v1/demands?status=UNKNOWN", "/api/v1/receipts?status=OPEN",
+                "/api/v1/demands?limit=0", "/api/v1/receipts?limit=101",
+                "/api/v1/exceptions?limit=-1", "/api/v1/financial-entries?receiptId=" + fixture.receiptId() + "&limit=101",
+                "/api/v1/financial-entries", "/api/v1/financial-entries?receiptId=not-a-uuid")) {
+            HttpResponse<String> response = get(path, "accounts");
+            assertThat(response.statusCode()).as(path).isEqualTo(400);
+            assertThat(response.body()).as(path).contains("VALIDATION_ERROR");
+        }
+        assertThat(get("/api/v1/demands?projectId=" + UUID.randomUUID(), "accounts").statusCode()).isEqualTo(404);
+        assertThat(get("/api/v1/receipts?projectId=" + UUID.randomUUID(), "accounts").statusCode()).isEqualTo(404);
+
+        UUID emptyReceipt = UUID.randomUUID();
+        jdbcTemplate.update("""
+                insert into receipt (id, source, bank_receipt_id, project_id, amount_paise,
+                    currency, posted_at, fact_hash)
+                values (?, 'empty-history-test', ?, ?::uuid, 1, 'INR', now(), repeat('0',64))
+                """, emptyReceipt, "bank-empty-history-" + emptyReceipt, project);
+        HttpResponse<String> existing = get("/api/v1/financial-entries?receiptId=" + emptyReceipt, "accounts");
+        assertThat(existing.statusCode()).isEqualTo(200);
+        assertThat(existing.body()).contains("\"items\":[]", "\"nextCursor\":null");
+        assertThat(get("/api/v1/financial-entries?receiptId=" + UUID.randomUUID(), "accounts").statusCode())
+                .isEqualTo(404);
+        assertThat(get("/api/v1/demands", "not-a-user").statusCode()).isEqualTo(401);
+    }
+
+    @Test void worklistDependencyFailureDoesNotLookLikeAnEmptySuccess() throws Exception {
+        try (Connection owner = ownerConnection(); var statement = owner.createStatement()) {
+            statement.execute("revoke select on demand from milestone_app");
+            try {
+                HttpResponse<String> failed = get("/api/v1/demands?limit=1", "accounts");
+                assertThat(failed.statusCode()).isEqualTo(503);
+                assertThat(failed.body()).contains("DEPENDENCY_UNAVAILABLE").doesNotContain("\"items\":[]");
+            } finally {
+                statement.execute("grant select on demand to milestone_app");
+            }
+        }
+        assertThat(get("/api/v1/demands?limit=1", "accounts").statusCode()).isEqualTo(200);
+    }
+
+    @Test void bankConflictWithoutReceiptHasUnknownResidualAndNoAllocationAction() throws Exception {
+        UUID exceptionId = UUID.randomUUID();
+        try (Connection owner = ownerConnection(); var insert = owner.prepareStatement("""
+                insert into exception_case (id, type, project_id, source, bank_receipt_id,
+                    dedupe_key, reason_code, first_seen_at, last_seen_at)
+                values (?, 'BANK_RECORD_CONFLICT', ?::uuid, 'fixture', ?, ?,
+                    'CHANGED_BANK_RECORD', ?::timestamptz, ?::timestamptz)
+                """)) {
+            insert.setObject(1, exceptionId);
+            insert.setString(2, "30000000-0000-0000-0000-000000000001");
+            insert.setString(3, "bank-no-receipt-" + exceptionId);
+            insert.setString(4, "no-receipt-" + exceptionId);
+            insert.setString(5, "2999-01-01T00:00:00Z");
+            insert.setString(6, "2999-01-01T00:00:00Z");
+            insert.executeUpdate();
+        }
+        String context = "exceptions:30000000-0000-0000-0000-000000000001:OPEN";
+        String cursor = dev.sakshi.milestoneledger.shared.web.KeysetPage.encode(
+                Instant.parse("2998-01-01T00:00:00Z"), new UUID(0, 0), context);
+        String response = get("/api/v1/exceptions?status=OPEN&cursor=" + cursor, "manager").body();
+        assertThat(response).contains(exceptionId.toString(), "\"residualAmountPaise\":null", "ADD_NOTE");
+        assertThat(response).doesNotContain("\"ALLOCATE\"");
+    }
+
+    @Test void receiptWorklistPaginatesTiedTimestampsAndOutstandingExcludesSettledDemand() throws Exception {
+        Instant tied = Instant.parse("2998-01-01T00:00:00Z");
+        UUID first = UUID.randomUUID(), second = UUID.randomUUID();
+        for (UUID receiptId : List.of(first, second)) {
+            jdbcTemplate.update("""
+                    insert into receipt (id, source, bank_receipt_id, project_id, amount_paise,
+                        currency, posted_at, recorded_at, fact_hash)
+                    values (?, 'pagination-fixture', ?, ?::uuid, 1, 'INR', ?, ?, repeat('0',64))
+                    """, receiptId, "bank-page-" + receiptId,
+                    "30000000-0000-0000-0000-000000000001", Timestamp.from(tied), Timestamp.from(tied));
+            jdbcTemplate.update("""
+                    insert into financial_entry (kind, receipt_id, amount_paise, actor_id, reason)
+                    values ('RECEIPT', ?, 1, '10000000-0000-0000-0000-000000000004', 'PAGINATION_FIXTURE')
+                    """, receiptId);
+        }
+        String context = "receipts:30000000-0000-0000-0000-000000000001:UNALLOCATED";
+        String before = dev.sakshi.milestoneledger.shared.web.KeysetPage.encode(
+                Instant.parse("2997-12-31T23:59:59Z"), UUID.randomUUID(), context);
+        String firstPage = get("/api/v1/receipts?status=UNALLOCATED&limit=1&cursor=" + before, "accounts").body();
+        String next = firstPage.replaceFirst(".*\"nextCursor\":\"([^\"]+)\".*", "$1");
+        assertThat(next).isNotEqualTo(firstPage);
+        String secondPage = get("/api/v1/receipts?status=UNALLOCATED&limit=1&cursor=" + next, "accounts").body();
+        assertThat(firstPage + secondPage).contains(first.toString(), second.toString());
+        assertThat(firstPage).doesNotContain(secondPage.replaceFirst(".*\"id\":\"([^\"]+)\".*", "$1"));
+
+        ManualFixture settled = manualFixture("10", "10");
+        assertThat(postJson("/api/v1/receipts/" + settled.receiptId() + "/allocations", client("accounts"),
+                allocationBody(settled.demandId(), "10"), "settled-" + UUID.randomUUID()).statusCode()).isEqualTo(201);
+        assertThat(get("/api/v1/demands?status=OPEN&status=PARTIALLY_PAID", "accounts").body())
+                .doesNotContain(settled.demandId().toString());
+        assertThat(get("/api/v1/demands?status=SETTLED", "accounts").body())
+                .contains(settled.demandId().toString());
+    }
+
+    @Test void worklistRowsAndIngestionMetadataUseOneSnapshotDuringConcurrentWrites() throws Exception {
+        ManualFixture fixture = manualFixture("100", "80");
+        String path = "/api/v1/demands?status=OPEN&limit=100";
+        String baseline = get(path, "accounts").body();
+        long pendingBefore = Long.parseLong(baseline.replaceFirst(".*\"pendingCount\":([0-9]+).*", "$1"));
+        try (Connection blocker = ownerConnection(); Connection observer = ownerConnection();
+                ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            blocker.setAutoCommit(false);
+            blocker.createStatement().execute("lock table inbox_event in access exclusive mode");
+            var response = executor.submit(() -> get(path, "accounts"));
+            try {
+                boolean metadataWaiting = false;
+                for (int attempt = 0; attempt < 100; attempt++) {
+                    try (var count = observer.createStatement().executeQuery("""
+                            select count(*) from pg_stat_activity where wait_event_type='Lock'
+                            and query ilike '%from inbox_event where project_id%'
+                            """)) {
+                        count.next();
+                        if (count.getInt(1) >= 1) { metadataWaiting = true; break; }
+                    }
+                    Thread.sleep(20);
+                }
+                assertThat(metadataWaiting).isTrue();
+                try (var insert = blocker.prepareStatement("""
+                        insert into financial_entry (kind, receipt_id, demand_id, amount_paise, actor_id, reason)
+                        values ('ALLOCATION', ?, ?, 50, '10000000-0000-0000-0000-000000000004', 'SNAPSHOT_TEST')
+                        """)) {
+                    insert.setObject(1, fixture.receiptId());
+                    insert.setObject(2, fixture.demandId());
+                    insert.executeUpdate();
+                }
+                UUID eventId = UUID.randomUUID();
+                try (var insert = blocker.prepareStatement("""
+                        insert into inbox_event (source, event_id, project_id, account_reference,
+                            bank_receipt_id, amount_paise, currency, demand_reference, posted_at, canonical_hash)
+                        values ('snapshot-fixture', ?, ?::uuid, 'trusted-account', ?, 1, 'INR', null, now(), repeat('0',64))
+                        """)) {
+                    insert.setString(1, "evt-snapshot-" + eventId);
+                    insert.setString(2, "30000000-0000-0000-0000-000000000001");
+                    insert.setString(3, "bank-snapshot-" + eventId);
+                    insert.executeUpdate();
+                }
+            } finally {
+                blocker.commit();
+            }
+            String snapshot = response.get().body();
+            assertThat(snapshot).contains("\"id\":\"" + fixture.demandId() + "\"");
+            assertThat(Long.parseLong(snapshot.replaceFirst(".*\"pendingCount\":([0-9]+).*", "$1")))
+                    .isEqualTo(pendingBefore);
+        }
+        String current = get("/api/v1/demands?status=PARTIALLY_PAID&limit=100", "accounts").body();
+        assertThat(current).contains("\"id\":\"" + fixture.demandId() + "\"");
+        assertThat(Long.parseLong(current.replaceFirst(".*\"pendingCount\":([0-9]+).*", "$1")))
+                .isEqualTo(pendingBefore + 1);
+        drainReceiptWorker();
+    }
+
+    @Test void failedIngestionIsVisibleWithoutCountingUnprocessedMoney() throws Exception {
+        ManualFixture fixture = manualFixture("100", "80");
+        String before = get("/api/v1/receipts?status=UNALLOCATED", "accounts").body();
+        long failedBefore = Long.parseLong(before.replaceFirst(".*\"failedCount\":([0-9]+).*", "$1"));
+        String eventId = "failed-worklist-" + UUID.randomUUID();
+        try (Connection owner = ownerConnection(); var insert = owner.prepareStatement("""
+                insert into inbox_event (source, event_id, project_id, account_reference,
+                    bank_receipt_id, amount_paise, currency, demand_reference, posted_at,
+                    canonical_hash, status, last_error_code)
+                values ('worklist-test', ?, ?::uuid, 'trusted-account', ?, 999999,
+                    'INR', null, now(), repeat('0',64), 'FAILED', 'TEST_FAILURE')
+                """)) {
+            insert.setString(1, eventId);
+            insert.setString(2, "30000000-0000-0000-0000-000000000001");
+            insert.setString(3, "bank-" + eventId);
+            insert.executeUpdate();
+        }
+        String after = get("/api/v1/receipts?status=UNALLOCATED", "accounts").body();
+        assertThat(after).contains(fixture.receiptId().toString(), "\"failedCount\":" + (failedBefore + 1));
+        assertThat(after).doesNotContain(eventId);
+        assertThat(get("/api/v1/receipts/" + fixture.receiptId(), "accounts").body())
+                .contains("\"unallocatedPaise\":\"80\"");
+    }
+
+    @Test void manualAndAutomaticAllocationRaceUnderTheDemandRowLock() throws Exception {
+        ManualFixture manual = manualFixture("100", "80");
+        String reference = jdbcTemplate.queryForObject("select reference from demand where id=?", String.class, manual.demandId());
+        String autoBankId = "bank-auto-race-" + UUID.randomUUID();
+        acceptWebhook(receiptPayload("evt-auto-race-" + UUID.randomUUID(), autoBankId, "80", reference));
+        Client accounts = client("accounts");
+        try (Connection owner = ownerConnection(); Connection observer = ownerConnection(); ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            owner.setAutoCommit(false);
+            try (var lock = owner.prepareStatement("select id from demand where id=? for update")) {
+                lock.setObject(1, manual.demandId());
+                lock.executeQuery().close();
+            }
+            var posted = executor.submit(() -> postJson("/api/v1/receipts/" + manual.receiptId() + "/allocations",
+                    accounts, allocationBody(manual.demandId(), "80"), "auto-race-" + UUID.randomUUID()));
+            var processed = executor.submit(receiptProcessor::processOneDueEvent);
+            try {
+                boolean bothWaiting = false;
+                for (int attempt = 0; attempt < 100; attempt++) {
+                    try (var count = observer.createStatement().executeQuery("""
+                            select count(*) from pg_stat_activity
+                            where wait_event_type='Lock' and query ilike '%from demand%' and query ilike '%for update%'
+                            """)) {
+                        count.next();
+                        if (count.getInt(1) >= 2) { bothWaiting = true; break; }
+                    }
+                    Thread.sleep(20);
+                }
+                assertThat(bothWaiting).isTrue();
+            } finally {
+                owner.commit();
+            }
+            assertThat(processed.get()).isTrue();
+            assertThat(posted.get().statusCode()).isIn(201, 409);
+        }
+        UUID autoReceipt = jdbcTemplate.queryForObject("select id from receipt where bank_receipt_id=?", UUID.class, autoBankId);
+        Long demandAllocated = jdbcTemplate.queryForObject("select sum(amount_paise) from financial_entry where demand_id=? and kind='ALLOCATION'", Long.class, manual.demandId());
+        Long manualAllocated = jdbcTemplate.queryForObject("select coalesce(sum(amount_paise),0) from financial_entry where receipt_id=? and kind='ALLOCATION'", Long.class, manual.receiptId());
+        Long automaticAllocated = jdbcTemplate.queryForObject("select coalesce(sum(amount_paise),0) from financial_entry where receipt_id=? and kind='ALLOCATION'", Long.class, autoReceipt);
+        assertThat(demandAllocated).isEqualTo(manualAllocated + automaticAllocated).isBetween(80L, 100L);
+        assertThat(manualAllocated).isBetween(0L, 80L);
+        assertThat(automaticAllocated).isBetween(0L, 80L);
+    }
+
+    @Test void manualAllocationFailureAfterEachWriteRollsBackMoneyAuditAndIdempotency() throws Exception {
+        for (String[] boundary : List.of(new String[] {"financial_entry", "insert", "new.kind='ALLOCATION'"},
+                new String[] {"exception_case", "update", "new.status='RESOLVED'"},
+                new String[] {"audit_event", "insert", "new.action='ALLOCATION_RECORDED'"})) {
+            ManualFixture fixture = manualFixture("100", "80");
+            String key = "manual-rollback-" + UUID.randomUUID();
+            String trigger = "test_manual_" + UUID.randomUUID().toString().replace('-', '_');
+            try (Connection owner = ownerConnection(); var statement = owner.createStatement()) {
+                statement.executeUpdate("create function " + trigger + "() returns trigger language plpgsql as $$ begin raise exception 'test injected failure'; end; $$");
+                statement.executeUpdate("create trigger " + trigger + " after " + boundary[1] + " on " + boundary[0]
+                        + " for each row when (" + boundary[2] + ") execute function " + trigger + "()");
+                assertThat(postJson("/api/v1/receipts/" + fixture.receiptId() + "/allocations", client("accounts"),
+                        allocationBody(fixture.demandId(), "80"), key).statusCode()).isEqualTo(503);
+            } finally {
+                try (Connection owner = ownerConnection(); var statement = owner.createStatement()) {
+                    statement.executeUpdate("drop trigger if exists " + trigger + " on " + boundary[0]);
+                    statement.executeUpdate("drop function if exists " + trigger + "()");
+                }
+            }
+            assertThat(jdbcTemplate.queryForObject("select count(*) from financial_entry where receipt_id=? and kind='ALLOCATION'", Integer.class, fixture.receiptId())).isZero();
+            assertThat(jdbcTemplate.queryForObject("select status from exception_case where id=?", String.class, fixture.exceptionId())).isEqualTo("OPEN");
+            assertThat(jdbcTemplate.queryForObject("""
+                    select count(*) from audit_event
+                    where entity_id=? and action in ('ALLOCATION_RECORDED','RESIDUAL_FUNDS_RESOLVED')
+                    """, Integer.class, fixture.receiptId())).isZero();
+            assertThat(jdbcTemplate.queryForObject("select count(*) from idempotency_request where idempotency_key=?", Integer.class, key)).isZero();
+        }
+    }
+
+    private ManualFixture manualFixture(String demandAmount, String receiptAmount) throws Exception {
+        drainReceiptWorker();
+        String reference = certifyDemand(demandAmount);
+        UUID demandId = jdbcTemplate.queryForObject("select id from demand where reference=?", UUID.class, reference);
+        String bankId = "bank-manual-fixture-" + UUID.randomUUID();
+        acceptWebhook(receiptPayload("evt-manual-fixture-" + UUID.randomUUID(), bankId, receiptAmount, null));
+        drainReceiptWorker();
+        UUID receiptId = jdbcTemplate.queryForObject("select id from receipt where bank_receipt_id=?", UUID.class, bankId);
+        UUID exceptionId = jdbcTemplate.queryForObject("select id from exception_case where receipt_id=? and type='UNALLOCATED_FUNDS'", UUID.class, receiptId);
+        return new ManualFixture(receiptId, demandId, exceptionId);
+    }
+    private String allocationBody(UUID demandId, String amount) {
+        return "{\"demandId\":\"" + demandId + "\",\"amountPaise\":\"" + amount + "\",\"reason\":\"Documented remittance\"}";
+    }
+    private record ManualFixture(UUID receiptId, UUID demandId, UUID exceptionId) { }
+
+    private boolean waitingRowLocks(Connection observer, String table, int expected) throws Exception {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            try (var query = observer.prepareStatement("""
+                    select count(*) from pg_stat_activity
+                    where wait_event_type='Lock' and query ilike ? and query ilike '%for update%'
+                    """)) {
+                query.setString(1, "%from " + table + "%");
+                try (var rows = query.executeQuery()) {
+                    rows.next();
+                    if (rows.getInt(1) >= expected) return true;
+                }
+            }
+            Thread.sleep(20);
+        }
+        return false;
     }
 
     private List<HttpResponse<String>> concurrentPosts(String milestoneId, String body, String firstKey, String secondKey) throws Exception {

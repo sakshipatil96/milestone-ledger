@@ -1,0 +1,10 @@
+services:
+  postgres:
+    ports: !override
+      - "127.0.0.1:15432:5432"
+  bank-simulator:
+    ports: !override
+      - "127.0.0.1:18089:8080"
+  app:
+    ports: !override
+      - "127.0.0.1:18080:8080"

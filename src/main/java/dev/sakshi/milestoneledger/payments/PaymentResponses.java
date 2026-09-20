@@ -10,8 +10,10 @@ public final class PaymentResponses {
                           String currency, String demandReference, Instant postedAt, Instant recordedAt,
                           String allocatedPaise, String unallocatedPaise, String status) { }
     public record Entry(UUID id, String kind, UUID receiptId, UUID demandId, String amountPaise,
-                        UUID inboxEventId, String reason, Instant createdAt) { }
+                        UUID inboxEventId, String reason, UUID actorId, String actorDisplayName, Instant createdAt) { }
     public record ExceptionCase(UUID id, String type, UUID receiptId, String source, String bankReceiptId,
                                 String reasonCode, String status, String residualAmountPaise,
                                 Instant firstSeenAt, Instant lastSeenAt, List<String> supportedActions) { }
+    public record Ingestion(long pendingCount, long failedCount, Instant oldestPendingReceivedAt, Instant asOf) { }
+    public record Worklist<T>(List<T> items, String nextCursor, Ingestion ingestion) { }
 }

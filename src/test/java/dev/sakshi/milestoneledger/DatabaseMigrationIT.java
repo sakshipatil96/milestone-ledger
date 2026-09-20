@@ -193,6 +193,55 @@ class DatabaseMigrationIT {
         }
     }
 
+    @Test void v7FinancialRecordsSurviveTheDay4IndexUpgrade() throws Exception {
+        String schema = "day4_upgrade_" + UUID.randomUUID().toString().replace('-', '_');
+        Flyway.configure().dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .schemas(schema).defaultSchema(schema).target(MigrationVersion.fromVersion("7")).load().migrate();
+        UUID receiptId = UUID.randomUUID();
+        try (Connection owner = ownerConnection(); var statement = owner.createStatement()) {
+            statement.execute("set search_path to " + schema);
+            try (var insert = owner.prepareStatement("""
+                    insert into receipt (id, source, bank_receipt_id, project_id, amount_paise,
+                        currency, posted_at, fact_hash)
+                    values (?, 'upgrade-check', ?, ?::uuid, 123, 'INR', now(), repeat('0',64))
+                    """)) {
+                insert.setObject(1, receiptId);
+                insert.setString(2, "bank-" + receiptId);
+                insert.setString(3, PROJECT_ID);
+                insert.executeUpdate();
+            }
+            try (var insert = owner.prepareStatement("""
+                    insert into financial_entry (kind, receipt_id, amount_paise, actor_id, reason)
+                    values ('RECEIPT', ?, 123, '10000000-0000-0000-0000-000000000004', 'UPGRADE_CHECK')
+                    """)) {
+                insert.setObject(1, receiptId);
+                insert.executeUpdate();
+            }
+        }
+        Flyway.configure().dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .schemas(schema).defaultSchema(schema).load().migrate();
+        try (Connection owner = ownerConnection(); var statement = owner.createStatement()) {
+            statement.execute("set search_path to " + schema);
+            try (var rows = statement.executeQuery("""
+                    select r.amount_paise, e.amount_paise, e.kind from receipt r
+                    join financial_entry e on e.receipt_id = r.id
+                    where r.id = '""" + receiptId + "'")) {
+                assertThat(rows.next()).isTrue();
+                assertThat(rows.getLong(1)).isEqualTo(123L);
+                assertThat(rows.getLong(2)).isEqualTo(123L);
+                assertThat(rows.getString(3)).isEqualTo("RECEIPT");
+                assertThat(rows.next()).isFalse();
+            }
+            try (var rows = statement.executeQuery("""
+                    select indexname from pg_indexes where schemaname = '""" + schema
+                    + "' and indexname in ('demand_project_created_time_idx', 'receipt_project_recorded_time_idx')")) {
+                assertThat(rows.next()).isTrue();
+                assertThat(rows.next()).isTrue();
+                assertThat(rows.next()).isFalse();
+            }
+        }
+    }
+
     private HttpResponse<String> get(String path, String username, String password, String requestId) throws Exception {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("http://localhost:" + serverPort + path)).GET();
         if (username != null) request.header("Authorization", "Basic " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8)));

@@ -27,7 +27,7 @@ All boxes except the bank and database are modules in the same application. The 
 | API/security | Validation, role enforcement, request idempotency, HMAC verification. |
 | Certification service | Freeze approved net amount and create one demand in one transaction. |
 | Inbox/receipt worker | Durable receipt ingestion, deduplication, matching, retry. |
-| Allocation service | Shared locking, balance checks, manual allocation and reversal. |
+| Allocation service | Shared locking and balance checks for automatic and manual allocation; reversal is deferred. |
 | Worklist queries | Compute balances from immutable receipts and signed financial entries. |
 | Reconciliation worker | Compare a complete bank snapshot with local receipts; recover missing records and expose disagreements. |
 | Exception service | Explain unallocated funds and bank discrepancies; preserve notes and resolution history. |
@@ -58,11 +58,11 @@ Authorize certifier → validate amount/reference → lock milestone → save ce
 
 Transient errors receive persisted retry metadata after rollback, with 1/2/4/8-second delays. After five failed attempts, mark the inbox row `FAILED`; invalid persisted facts fail immediately with a safe code. Failure recording updates only a still-`PENDING` row, so a late recorder cannot overwrite another worker's success. Manager retry locks/resets a failed row, records a reasoned audit event, and stores an idempotent `202` response. If failure recording is itself unavailable, log a safe code and leave pending work recoverable. A crashed transaction releases its locks; the original pending row remains available. No persistent `PROCESSING` claim can strand an inbox item. Successful processing logs are emitted only after commit, with inbox/receipt/demand/exception IDs, attempt count, and duration.
 
-### Manual allocation and reversal
+### Manual allocation (Day 4) and deferred reversal
 
-Lock receipt first, then demand; every allocation path uses that order. Recompute net allocated amounts and enforce project/client/currency and both balance limits. Append entries, update residual-funds exceptions, and save the idempotent response in one transaction.
+Lock receipt first, then demand; automatic exact-reference and manual allocation share the same locking, balance calculation, and entry insertion service. Manual allocation validates its complete requested amount after checking receipt availability before demand availability. It appends the entry, resolves only an open residual-funds case when the receipt reaches zero unallocated balance, appends audit evidence, and saves the idempotent response in one transaction. Bank-record conflicts are never auto-resolved by allocation or notes. Notes are append-only audit events on the exception and do not change money or status.
 
-Reversal appends an equal, opposite entry linked to one original allocation. A unique reversal reference prevents a second reversal. It reopens outstanding/unallocated balances and creates or reopens the relevant receipt exception. It does not trigger automatic rematching. Reallocation is a separate explicit request.
+The proposed later reversal flow would append an equal, opposite entry linked to one original allocation. It would reopen outstanding/unallocated balances and create or reopen the relevant receipt exception without automatic rematching. Reversal and reallocation are not implemented in the five-day MVP; posted allocations cannot yet be corrected through its API.
 
 ### Reconciliation
 

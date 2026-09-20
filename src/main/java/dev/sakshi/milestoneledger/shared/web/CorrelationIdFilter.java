@@ -1,6 +1,7 @@
 package dev.sakshi.milestoneledger.shared.web;
 
 import java.io.IOException;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -26,6 +27,8 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
     static final String REQUEST_ID_ATTRIBUTE = CorrelationIdFilter.class.getName() + ".requestId";
     private static final String REQUEST_ID_MDC_KEY = "requestId";
     private static final Pattern SAFE_REQUEST_ID = Pattern.compile("[A-Za-z0-9._-]{1,64}");
+    private static final Set<String> COLLECTION_PATHS = Set.of(
+            "/api/v1/demands", "/api/v1/receipts", "/api/v1/exceptions", "/api/v1/financial-entries");
     private static final Logger LOGGER = LoggerFactory.getLogger(CorrelationIdFilter.class);
     private final String applicationVersion;
 
@@ -47,7 +50,7 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
             filterChain.doFilter(request, response);
         } finally {
             long durationMillis = (System.nanoTime() - startedAt) / 1_000_000;
-            if (!isSuccessfulHealthProbe(request, response)) {
+            if (!isSuccessfulHealthProbe(request, response) && !isSuccessfulCollectionRead(request, response)) {
                 LOGGER.atInfo()
                         .addKeyValue("httpMethod", request.getMethod())
                         .addKeyValue("httpPath", request.getRequestURI())
@@ -67,6 +70,11 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
 
     static boolean isSuccessfulHealthProbe(HttpServletRequest request, HttpServletResponse response) {
         return response.getStatus() < 400 && request.getRequestURI().matches("/(api/v1/health|actuator/health|livez|readyz).*");
+    }
+
+    static boolean isSuccessfulCollectionRead(HttpServletRequest request, HttpServletResponse response) {
+        return response.getStatus() < 400 && "GET".equals(request.getMethod())
+                && COLLECTION_PATHS.contains(request.getRequestURI());
     }
 
     private static String requestId(String suppliedRequestId) {

@@ -6,7 +6,7 @@ This is a synthetic-data portfolio prototype inspired by a contractor workflow. 
 
 ## Current status
 
-Day 3 adds a database-backed receipt worker to the certified-demand slice. Signed deliveries are durably accepted, then processed with immutable receipt/financial-entry facts, exact-reference allocation, visible residual/conflict exceptions, duplicate receipt protection, and retryable failure metadata.
+Day 4 adds collections worklists, ingestion-lag visibility, append-only investigation notes, and idempotent manual allocation to the certified-demand slice. Signed deliveries remain durably accepted and receipts/financial entries remain immutable.
 
 ## Planned stack
 
@@ -27,7 +27,7 @@ AI guidance and working checklists are intentionally local-only and excluded fro
 
 ## Current proof and boundary
 
-The demo certifies one scheduled ₹1,00,000 milestone, then sends signed synthetic notifications and polls each inbox event to a terminal state. It asserts a ₹40,000 partial payment, five deliveries with one financial effect, a final receipt that settles the demand with ₹10,000 excess, two distinct equal-value receipts, missing/unknown references, and a changed bank record that creates a conflict without altering posted money. Reconciliation and manual allocation remain out of scope.
+The demo certifies one scheduled ₹1,00,000 milestone, then sends signed synthetic notifications and polls each inbox event to a terminal state. Use `GET /api/v1/demands?status=OPEN&status=PARTIALLY_PAID`, `GET /api/v1/receipts`, and `GET /api/v1/exceptions` to inspect outstanding money, received money, lag, and exceptions. Accounts or a manager can append a note and allocate an unmatched receipt with CSRF plus an idempotency key. A ₹40,000 receipt allocated first for ₹15,000 remains an open residual; allocating the final ₹25,000 resolves that residual and leaves the demand outstanding at ₹60,000. Reversal and reconciliation remain out of scope.
 
 ## Scope boundaries
 
@@ -88,4 +88,8 @@ The integration tests start isolated PostgreSQL 17 containers, apply migrations 
 
 ## Latest verification evidence
 
-On 2026-09-19, `./mvnw verify` passed locally with PostgreSQL 17 Testcontainers (35 tests, no failures/errors). The isolated Compose project `milestone_ledger_day3_verify` built and started on alternate localhost ports without touching developer volumes; `demo/setup-read.sh` passed with externally supplied synthetic credentials. Restarting only its app container preserved the settled demand and open exceptions. A second signed event was deliberately paused inside a financial-entry transaction; killing the isolated app left its inbox row `PENDING` with no receipt link, and restarting processed it into one receipt entry. The temporary trigger was removed afterward.
+On 2026-09-20, `./mvnw verify -q` passed locally with PostgreSQL 17 Testcontainers (50 tests, no failures/errors). Coverage includes V7→V8 financial-record preservation, worklist filters and tied-timestamp cursors, a PostgreSQL-synchronized single-response snapshot, pending/failed ingestion without phantom money, empty-versus-missing history, no-receipt residuals, boundary and project-scope errors, and a real worklist dependency failure. Successful collection reads are quiet; failed reads retain correlated status and timing without logging query strings or credentials. Manual-allocation races, rollback, persisted notes, role checks, and replay after application restart are also covered.
+
+Run `bash demo/run-day4-compose.sh` for a fresh isolated Day 4 demo on alternate localhost ports. The runner creates disposable credentials in its process environment, builds and starts Compose, checks the inspection/note/₹15,000 plus ₹25,000 allocation/replay/history flow, then stops the containers. Its named synthetic PostgreSQL volume remains available for inspection. This isolated run passed with persisted demand `e370a22f-d1db-4a87-91d8-8b7ec995512e`, receipt `2bf5baac-8b48-4c19-93ce-6d1168a39029`, and exception `b136108f-9b55-474a-b700-fafb5cea2c76`. The prior isolated Compose Day 3 evidence remains recorded below.
+
+The isolated Day 4 Compose flow was rerun after the logging change on 2026-09-20 and passed in 22.5 seconds; its containers were stopped and its synthetic named volume was retained.
