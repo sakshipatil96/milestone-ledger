@@ -6,9 +6,9 @@ This is a synthetic-data portfolio prototype inspired by a contractor workflow. 
 
 ## Current status
 
-Day 5 adds durable bank-snapshot reconciliation and a reproducible proof flow to the certified-demand and collections slice. Signed deliveries and trusted recovery events share the inbox path; receipts, financial entries, and investigation notes remain append-only. Remote CI success is pending an authorized commit and push.
+The five-day API-only MVP is complete. Day 5 adds durable bank-snapshot reconciliation and a reproducible proof flow to the certified-demand and collections slice. Signed deliveries and trusted recovery events share the inbox path; receipts, financial entries, and investigation notes remain append-only. The pushed application revision passed local and GitHub Actions verification.
 
-## Planned stack
+## Stack
 
 - Java 21, Spring Boot, Spring JDBC, Flyway, Maven
 - PostgreSQL 17
@@ -100,7 +100,7 @@ The earlier under-two-minute collections inspection remains available through `b
 
 See [operations](OPERATIONS.md) for failed ingestion, reconciliation, restart, and backup/restore procedures. Reconciliation depends on a stable, complete simulated snapshot through its `asOf`; it cannot prove bank completeness outside that simulator contract. The MVP has one configured project/source/account, INR only, no real bank integration, no allocation reversal, no outbound outbox, and no public deployment. Readiness checks database health, while reconciliation progress and errors come from the run API and worklist metadata.
 
-Build and Compose images are pinned by locally resolved SHA-256 digests; GitHub Actions are pinned to full commit SHAs. Maven dependency versions resolve through the pinned Spring Boot parent and Maven Wrapper. `APP_VERSION` is the GitHub revision in CI test logs; the isolated local demo labels its uncommitted working tree separately. A remote green Actions run cannot be claimed until these changes are committed and pushed with authorization.
+Build and Compose images are pinned by locally resolved SHA-256 digests; GitHub Actions are pinned to full commit SHAs. Maven dependency versions resolve through the pinned Spring Boot parent and Maven Wrapper. `APP_VERSION` is the GitHub revision in CI test logs; the isolated local demo labels its working tree separately.
 
 ## Latest verification evidence
 
@@ -108,7 +108,7 @@ On 2026-09-20, the final local `./mvnw verify -q` passed **75 tests, zero failur
 
 `bash demo/run-day5-compose.sh` passed on a fresh isolated Compose project with V10 and pinned images. The final timed proof took **28 seconds**, excluding build/startup; it verified the Day 4 inspection/allocation flow, five duplicate deliveries, two equal-value distinct receipts, missed-notification recovery, repeat safety, changed facts, local-only discrepancy, unavailable snapshot page, and persisted run/receipt reads after an app restart. Its synthetic named volume was retained; no developer volume was touched.
 
-Performance method: on a local **Darwin arm64** host with **Docker Desktop 29.6.1**, PostgreSQL 17.6, and Java 21, `ReconciliationIT.measureThousandReceiptWorklistAndNormalProcessing` inserted 1,000 receipts with receipt entries, warmed the API, then timed ten authenticated page-100 worklist requests. The final run measured **127–150 ms**, nearest-rank p95 **150 ms** against the under-one-second target. One normal receipt processing transaction took **6 ms** against the five-second target. These are local observations, not production capacity claims. The tested base Git revision was `f37dd85ab0de6644c85ef4d1887d8a8bbfe2dadb` plus the uncommitted Day 5 working tree; there is no immutable final revision or remote CI result yet.
+Performance method: on a local **Darwin arm64** host with **Docker Desktop 29.6.1**, PostgreSQL 17.6, and Java 21, `ReconciliationIT.measureThousandReceiptWorklistAndNormalProcessing` inserted 1,000 receipts with receipt entries, warmed the API, then timed ten authenticated page-100 worklist requests. The final run measured **127–150 ms**, nearest-rank p95 **150 ms** against the under-one-second target. One normal receipt processing transaction took **6 ms** against the five-second target. These are local observations, not production capacity claims. The application code was committed in `c2841642bae928129c73f8f0af6140d68df3fdb8`; [GitHub Actions run 35548919600](https://github.com/sakshipatil96/milestone-ledger/actions/runs/35548919600) passed its Java 21 `./mvnw verify` job with 75 tests, zero failures/errors/skips. Its workflow log was checked for selected credential and sensitive-header patterns, with no matches.
 
 On 2026-09-20, `./mvnw verify -q` passed locally with PostgreSQL 17 Testcontainers (50 tests, no failures/errors). Coverage includes V7→V8 financial-record preservation, worklist filters and tied-timestamp cursors, a PostgreSQL-synchronized single-response snapshot, pending/failed ingestion without phantom money, empty-versus-missing history, no-receipt residuals, boundary and project-scope errors, and a real worklist dependency failure. Successful collection reads are quiet; failed reads retain correlated status and timing without logging query strings or credentials. Manual-allocation races, rollback, persisted notes, role checks, and replay after application restart are also covered.
 
