@@ -26,9 +26,10 @@ class BankWebhookServiceTest {
     @Test void unavailableDatabasePreventsWebhookAcceptance() throws Exception {
         Instant now = Instant.parse("2026-09-19T12:00:00Z");
         Clock clock = Clock.fixed(now, ZoneOffset.UTC);
-        BankWebhookService service = new BankWebhookService(new JdbcTemplate(unavailableDataSource()), JsonMapper.builder().build(),
+        JdbcTemplate jdbc = new JdbcTemplate(unavailableDataSource());
+        BankWebhookService service = new BankWebhookService(jdbc, JsonMapper.builder().build(),
                 new BankWebhookProperties("demo-bank", UUID.fromString("30000000-0000-0000-0000-000000000001"),
-                        "DEMO-ACCOUNT-001", SECRET), clock);
+                        "DEMO-ACCOUNT-001", SECRET), clock, new InboxEventStore(jdbc, clock));
         String payload = "{\"eventId\":\"evt-db-offline\",\"receipt\":{\"bankReceiptId\":\"bank-db-offline\",\"amountPaise\":\"1\",\"currency\":\"INR\",\"demandReference\":\"DEM-UNKNOWN\",\"postedAt\":\"2026-09-19T10:00:00Z\"}}";
         String timestamp = Long.toString(now.getEpochSecond());
 

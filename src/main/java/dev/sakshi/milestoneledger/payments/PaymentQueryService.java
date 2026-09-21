@@ -97,7 +97,7 @@ public class PaymentQueryService {
         boolean more = rows.size() > size;
         List<PaymentResponses.Receipt> items = more ? rows.subList(0, size) : rows;
         String next = more ? KeysetPage.encode(items.getLast().recordedAt(), items.getLast().id(), context) : null;
-        return new PaymentResponses.Worklist<>(items, next, ingestion(scope));
+        return new PaymentResponses.Worklist<>(items, next, ingestion(scope), reconciliation(scope));
     }
 
     @Transactional(readOnly = true)
@@ -157,7 +157,25 @@ public class PaymentQueryService {
         String next = more ? KeysetPage.encode(items.getLast().createdAt(),
                 items.getLast().response().id(), context) : null;
         return new PaymentResponses.Worklist<>(items.stream().map(TimedDemand::response).toList(),
-                next, ingestion(scope));
+                next, ingestion(scope), reconciliation(scope));
+    }
+
+    private PaymentResponses.Reconciliation reconciliation(UUID projectId) {
+        return jdbc.query("""
+                select id,status,as_of,finished_at,error_code,
+                    (select s.as_of from reconciliation_run s where s.project_id=?
+                        and s.status in ('COMPLETED','COMPLETED_WITH_ERRORS')
+                        order by s.created_at desc,s.id desc limit 1) successful
+                from reconciliation_run where project_id=? order by created_at desc,id desc limit 1
+                """, (rs, n) -> new PaymentResponses.Reconciliation(rs.getObject("id", UUID.class),
+                rs.getString("status"), timestamp(rs, "as_of"), timestamp(rs, "finished_at"),
+                rs.getString("error_code"), timestamp(rs, "successful")), projectId, projectId)
+                .stream().findFirst().orElse(null);
+    }
+
+    private static Instant timestamp(ResultSet rs, String name) throws SQLException {
+        var value = rs.getTimestamp(name);
+        return value == null ? null : value.toInstant();
     }
 
     private PaymentResponses.Ingestion ingestion(UUID projectId) {

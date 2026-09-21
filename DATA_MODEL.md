@@ -22,10 +22,12 @@
 | `inbox_event` | Delivery `event_id`, trusted project/account and normalized bank facts, nullable exact reference, original delivery replay hash, nullable receipt link, origin, retry metadata, and timestamps. V5 rows retain their hash and become `WEBHOOK` origin without rewriting facts. |
 | `receipt` | Implemented immutable facts: unique `(source, bank_receipt_id)`, trusted project, positive INR amount, nullable reference, posting/recording timestamps, and an independent receipt-fact hash. |
 | `financial_entry` | Implemented append-only `RECEIPT`, `ALLOCATION`, and future-compatible `ALLOCATION_REVERSAL` shapes. One positive receipt entry exists per receipt; allocation effects derive balances. |
-| `exception_case` | Implemented deduplicated residual-funds and bank-record-conflict cases with lifecycle/timestamps and receipt/bank identity links. Do not store an authoritative residual amount. |
+| `exception_case` | Deduplicated residual-funds, bank-record-conflict, and local-receipt-not-in-bank cases with lifecycle/timestamps and receipt/bank identity links. Do not store an authoritative residual amount. |
 | `audit_event` | `actor_id`, `action`, `entity_type`, `entity_id`, optional `reason`, `request_id`, `created_at`. Append-only; excludes raw sensitive payloads. Includes exception notes and transitions. |
-| `reconciliation_run` | `source`, `project_id`, `status`, nullable `snapshot_id`/`as_of`/`next_cursor`, `lease_until`, `attempt_count`, `bank_count`, `recovered_count`, `conflict_count`, `failed_count`, `started_at`, `finished_at`, `error_code`. |
-| `reconciliation_item` | `run_id`, `bank_receipt_id`, canonical receipt JSON/hash, nullable `inbox_event_id`, `outcome`. Durable staging and recovery tracking. |
+| `reconciliation_run` | Trusted `source`, `project_id`, `account_reference`, initiating `actor_id`/`request_id`, status, durable phase, nullable `snapshot_id`/`as_of`/`next_cursor` and local-absence cursor, lease owner/version/expiry, fetch attempts/page count/next attempt, counts, timestamps, and safe error code. |
+| `reconciliation_cursor` | Unique `(run_id, cursor_value)` history rejects cursor loops after restart. |
+| `reconciliation_item` | Unique `(run_id, bank_receipt_id)`, validated amount/currency/reference/posting time, canonical receipt hash, nullable inbox event link, and durable outcome. Identical repeated bank rows deduplicate. |
+| `reconciliation_exception` | Unique `(run_id, exception_id)` historical association of observed or resolved discrepancy cases to the run that compared them. |
 | `idempotency_request` | `actor_id`, `operation`, `key`, `request_hash`, `response_status`, `response_body`, `created_at`. Unique actor/operation/key; written atomically with successful user mutation. Retain for the prototype lifetime. |
 
 Actors are a fixed registry for configured Basic-auth identities (`CERTIFIER`, `ACCOUNTS`, `MANAGER`) and named system actors; it is not a user-management system and has no user-management API. The runtime role can read the setup registry/client/project data but cannot modify clients or projects. Client identity is derived through the receipt's project; matching never infers a project from an untrusted reference.
@@ -66,9 +68,14 @@ Exception types: `UNALLOCATED_FUNDS` with reasons `MISSING_REFERENCE`, `UNKNOWN_
 - Index `demand(project_id, created_at, id)` and `receipt(project_id, recorded_at, id)` for worklists.
 - Unique `exception_case(dedupe_key)`; index `(project_id, status, first_seen_at, id)`. Residual-funds key is receipt ID plus type; discrepancy key is source/bank receipt ID plus type.
 - Unique `reconciliation_item(run_id, bank_receipt_id)`; partial unique active run `(source, project_id) WHERE status IN ('QUEUED','RUNNING')`.
+- Unique `reconciliation_cursor(run_id, cursor_value)` prevents a cursor loop; due and recent-run indexes support worker claims and worklist freshness.
 - Unique `idempotency_request(actor_id, operation, key)`; index audit events by entity and time.
 
 V6 follows V5 without editing applied migrations: it relaxes only the inbox reference nullability, adds a check rejecting supplied blank/padded references, creates receipts/entries/exceptions, and adds receipt linkage. V7 grants `UPDATE(id)` on demand solely for PostgreSQL row locking; a trigger rejects actual demand fact changes. V8 adds `(project_id, created_at, id)` and `(project_id, recorded_at, id)` worklist indexes without changing financial records. Runtime `UPDATE(id)` on receipt similarly enables `FOR UPDATE`, while its trigger rejects posted-fact changes. Runtime can read/insert financial entries but cannot update/delete them, and can update only operational inbox/exception columns. Investigation notes are append-only `audit_event` rows with `action=EXCEPTION_NOTE`, `entity_type=EXCEPTION`, and the exception ID. Owners retain migration authority. Receipt and demand balances are derived with exact aggregate conversion; the API rejects out-of-range or negative/over-amount ledger states rather than truncating them.
+
+V9 adds only reconciliation operations and the third exception type. It grants the runtime role select/insert on the new tables and updates only to run progress and item outcome/link fields. Cursor and run/exception links are insert-only. It grants no additional receipt, demand, ledger, or audit mutation privilege. The V8 upgrade test preserves a pending inbox event, demand, receipt, receipt entry, allocation, exception, and investigation note through the new migrations.
+
+V10 adds a nullable local-absence cursor to the run so each scan transaction handles at most 100 eligible local receipts and can resume from its committed position. The V8 upgrade test now migrates through V10 and verifies its existing demand and allocation as well.
 
 ## Optional outbox extension
 

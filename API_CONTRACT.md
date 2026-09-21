@@ -1,6 +1,6 @@
 # API Contract
 
-## Day 3 implemented surface
+## Implemented API surface
 
 All paths are under `/api/v1`, use JSON and UUID resource IDs, and use UTC ISO-8601 timestamps. Monetary values are decimal-string paise. The API currently supports INR only. Unknown JSON fields and numeric/fractional money values are rejected.
 
@@ -24,8 +24,10 @@ Local demo users authenticate with HTTP Basic using externally configured BCrypt
 | `POST /receipts/{receiptId}/allocations` | Accounts/manager + CSRF | Allocates evidenced receipt funds to one demand atomically. |
 | `POST /exceptions/{exceptionId}/notes` | Accounts/manager + CSRF | Appends an investigation note without changing money or case state. |
 | `GET /exceptions/{exceptionId}/notes` | All three roles | Paginated append-only investigation history. |
+| `POST /reconciliation-runs` | Accounts/manager + CSRF | Durable queued run; `202` and `Location`. |
+| `GET /reconciliation-runs/{runId}` | All three roles | Scoped run progress, counts, safe error code, and related exception/event IDs. |
 
-Automatic receipt processing, manual allocation, investigation notes, and collections worklists are implemented. Reconciliation and allocation reversal remain later scope.
+Automatic receipt processing, manual allocation, investigation notes, collections worklists, and reconciliation are implemented. Allocation reversal remains deferred.
 
 ## CSRF workflow
 
@@ -75,13 +77,13 @@ An identical replay of `(source, eventId)` returns the same local UUID and statu
 
 Receipt comparison is independent of delivery IDs and the old inbox replay hash. It hashes trusted source/project/account scope, bank receipt ID, positive amount, INR, nullable exact reference, and the PostgreSQL-microsecond-normalized posting timestamp. Existing inbox hashes are preserved. An identical bank receipt identity links to the original receipt with no new money; changed facts end the delivery as `CONFLICT` and open a case.
 
-`GET /ingestion-events/{eventId}` returns `id`, `source`, `status`, trusted `projectId`/`accountReference`, `bankReceiptId`, string `amountPaise`, `currency`, nullable `demandReference`, `postedAt`, `attemptCount`, `receivedAt`, `nextAttemptAt`, nullable `lastErrorCode`, nullable `receiptId`, nullable `processedAt`, and `origin` (`WEBHOOK` for existing deliveries). Terminal statuses are `PROCESSED`, `CONFLICT`, and `FAILED`. `GET /ingestion-events?status=...&limit=...&cursor=...` returns `{"items":[...],"nextCursor":null|"..."}` with those same event objects. `status` is optional and must be `PENDING`, `PROCESSED`, `CONFLICT`, or `FAILED`.
+`GET /ingestion-events/{eventId}` returns `id`, `source`, `status`, trusted `projectId`/`accountReference`, `bankReceiptId`, string `amountPaise`, `currency`, nullable `demandReference`, `postedAt`, `attemptCount`, `receivedAt`, `nextAttemptAt`, nullable `lastErrorCode`, nullable `receiptId`, nullable `processedAt`, and `origin` (`WEBHOOK` or the historical `RECOVERY` value for trusted snapshot recovery). Terminal statuses are `PROCESSED`, `CONFLICT`, and `FAILED`. `GET /ingestion-events?status=...&limit=...&cursor=...` returns `{"items":[...],"nextCursor":null|"..."}` with those same event objects. `status` is optional and must be `PENDING`, `PROCESSED`, `CONFLICT`, or `FAILED`.
 
 `POST /ingestion-events/{eventId}/retry` takes `{"reason":"bank corrected delivery"}` plus CSRF and a nonblank `Idempotency-Key`. The manager-only operation accepts only `FAILED` rows, resets their retry budget, and returns `202 {"ingestionEventId":"<UUID>","status":"PENDING","duplicate":false}`. Exact same-key replay returns the original response snapshot. A different request with that key returns `409 IDEMPOTENCY_KEY_REUSED`; nonfailed events return `409 EVENT_NOT_RETRYABLE`.
 
 `GET /receipts/{receiptId}` returns immutable `id`, `source`, `bankReceiptId`, `projectId`, string `amountPaise`, `currency`, nullable `demandReference`, `postedAt`, `recordedAt`, and derived string `allocatedPaise`/`unallocatedPaise` and `status` (`UNALLOCATED`, `PARTIALLY_ALLOCATED`, `ALLOCATED`). A receipt always has one `RECEIPT` history entry; allocation entries do not add to inflow totals.
 
-`GET /demands` accepts repeated `status=OPEN|PARTIALLY_PAID|SETTLED`; `GET /receipts` accepts repeated `status=UNALLOCATED|PARTIALLY_ALLOCATED|ALLOCATED`. Both accept optional `projectId` (the configured project only), `limit` (default 50, maximum 100), and a filter-bound keyset `cursor`. Demand and receipt worklists return `items`, `nextCursor`, and `ingestion`: `{pendingCount,failedCount,oldestPendingReceivedAt,asOf}`. Counts describe accepted ingestion work, not bank completeness; reconciliation freshness is deferred to ML-10. Every individual response is calculated under one read-only repeatable-read snapshot; separate paginated requests do not share a frozen snapshot.
+`GET /demands` accepts repeated `status=OPEN|PARTIALLY_PAID|SETTLED`; `GET /receipts` accepts repeated `status=UNALLOCATED|PARTIALLY_ALLOCATED|ALLOCATED`. Both accept optional `projectId` (the configured project only), `limit` (default 50, maximum 100), and a filter-bound keyset `cursor`. Demand and receipt worklists return `items`, `nextCursor`, `ingestion`: `{pendingCount,failedCount,oldestPendingReceivedAt,asOf}`, and nullable `reconciliation`: `{latestRunId,latestStatus,snapshotAsOf,completedAt,errorCode,lastSuccessfulSnapshotAsOf}`. `lastSuccessfulSnapshotAsOf` includes complete comparisons that ended with recovery errors, because their bank comparison was complete. A recent run or `COMPLETED` never implies zero open exceptions. Every individual response is calculated under one read-only repeatable-read snapshot; separate paginated requests do not share a frozen snapshot.
 
 `GET /financial-entries?receiptId=<UUID>` or `?demandId=<UUID>` requires exactly one filter. It validates the scoped resource before returning a page, so missing resources return 404 while an existing resource with no history returns an empty page. Entries also expose `actorId` and `actorDisplayName`.
 
@@ -102,3 +104,24 @@ Errors use the correlated envelope:
 ```
 
 Important codes include `IDEMPOTENCY_KEY_REQUIRED` (400), `IDEMPOTENCY_KEY_REUSED` (409), `MILESTONE_ALREADY_CERTIFIED` (409), `CERTIFICATION_REFERENCE_CONFLICT` (409), `EVENT_ID_CONFLICT` (409), `EVENT_NOT_RETRYABLE` (409), `UNSUPPORTED_CURRENCY` (422), `UNAUTHENTICATED`/`INVALID_SIGNATURE`/`STALE_SIGNATURE` (401), `FORBIDDEN` (403), `NOT_FOUND` (404), and `DEPENDENCY_UNAVAILABLE` (503).
+
+## Reconciliation
+
+`POST /reconciliation-runs` requires the configured project UUID, a nonblank trimmed `Idempotency-Key` of at most 200 characters, Basic authentication as accounts or manager, and CSRF. Source and account come from server configuration. An accepted request persists the run, initiating actor and request ID, idempotency response, and audit event in one transaction:
+
+```json
+{"projectId":"30000000-0000-0000-0000-000000000001"}
+```
+
+The response is `202 {"runId":"<UUID>","status":"QUEUED"}` with `Location: /api/v1/reconciliation-runs/<UUID>`. Same actor/key/project replays that original accepted body and location, even after completion. A new key while a run is active returns `409 RECONCILIATION_ALREADY_RUNNING`. Missing/invalid fields or key return `400`; out-of-scope projects return `404` before idempotency lookup; unauthenticated/forbidden requests return `401`/`403`; database unavailability returns `503`.
+
+`GET /reconciliation-runs/{runId}` is available to all three roles for the configured project. It returns `runId`, `status`, `phase`, nullable `snapshotId`, `asOf`, `errorCode`, `startedAt`, `finishedAt`, `createdAt`, `bankCount`, `recoveredCount`, `conflictCount`, `failedCount`, `exceptionIds`, `failedEventIds`, and `countsProvisional`. Status is `QUEUED`, `RUNNING`, `COMPLETED`, `COMPLETED_WITH_ERRORS`, or `FAILED`. Phases are `FETCH`, `COMPARE`, `ABSENCE`, `WAIT`, and `DONE`; they report durable progress, not financial balances. Counts are provisional while queued/running. On a failed incomplete fetch, `bankCount` is only the distinct count staged so far and no absence comparison has run.
+
+- `bankCount`: distinct validated bank receipt identities staged for this run; complete only after the last page.
+- `recoveredCount`: staged identities whose linked recovery event actually created a `RECEIPT` financial entry in this run. A webhook that wins the race does not increase it.
+- `conflictCount`: associated bank discrepancy cases still open when the run finalizes. Resolution verified by this run is excluded.
+- `failedCount`: linked recovery events that were `FAILED` when the run finalized. Their IDs and counts remain historical after a later manual ingestion retry.
+
+`COMPLETED` means the full snapshot was compared and all linked recovery events reached nonfailed terminal outcomes; discrepancies can still be open. `COMPLETED_WITH_ERRORS` means at least one linked recovery event failed; `errorCode` is `RECOVERY_EVENT_FAILED`. `FAILED` means an invalid, inconsistent, expired, or exhausted snapshot fetch; safe codes include `INVALID_SNAPSHOT`, `INCONSISTENT_SNAPSHOT`, `CONFLICTING_SNAPSHOT_RECORD`, `CURSOR_LOOP`, `SNAPSHOT_EXPIRED`, and `BANK_UNAVAILABLE`. Bank payloads are never returned.
+
+`GET /exceptions` also exposes `LOCAL_RECEIPT_NOT_IN_BANK`, with the same note action as other cases. Only a later complete matching run whose snapshot `asOf` is no earlier than the discrepancy's last observation resolves it; a discrepancy observed after that run began remains open. Notes and allocation do not resolve bank discrepancies. The private simulator uses `GET /receipts` followed by `GET /receipts?cursor=<opaque>` and returns `snapshotId`, `asOf`, up to 100 receipt items, and nullable `nextCursor`. Its controls are outside the product API.

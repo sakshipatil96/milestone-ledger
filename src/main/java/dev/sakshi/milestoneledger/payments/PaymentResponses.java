@@ -15,5 +15,8 @@ public final class PaymentResponses {
                                 String reasonCode, String status, String residualAmountPaise,
                                 Instant firstSeenAt, Instant lastSeenAt, List<String> supportedActions) { }
     public record Ingestion(long pendingCount, long failedCount, Instant oldestPendingReceivedAt, Instant asOf) { }
-    public record Worklist<T>(List<T> items, String nextCursor, Ingestion ingestion) { }
+    public record Reconciliation(UUID latestRunId, String latestStatus, Instant snapshotAsOf,
+                                 Instant completedAt, String errorCode, Instant lastSuccessfulSnapshotAsOf) { }
+    public record Worklist<T>(List<T> items, String nextCursor, Ingestion ingestion,
+                              Reconciliation reconciliation) { }
 }

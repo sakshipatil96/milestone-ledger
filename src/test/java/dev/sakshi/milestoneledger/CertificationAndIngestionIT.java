@@ -40,6 +40,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
@@ -53,7 +54,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class CertificationAndIngestionIT {
     private static final String MILESTONE_ID = "40000000-0000-0000-0000-000000000002";
     private static final String WEBHOOK_SECRET = "test-webhook-secret";
-    @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6-alpine")
+    @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(DockerImageName.parse("postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94").asCompatibleSubstituteFor("postgres"))
             .withDatabaseName("certification_test").withUsername("test_owner").withPassword("test-owner-password")
             .withInitScript("db/test/create-runtime-role.sql");
 

@@ -1,13 +1,12 @@
 package dev.sakshi.milestoneledger.payments;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.UUID;
+import dev.sakshi.milestoneledger.ingestion.ReceiptFacts;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -158,12 +157,8 @@ public class ReceiptProcessor {
         }
     }
     private static String factHash(Event event) {
-        return sha256(event.source() + "\n" + event.projectId() + "\n" + event.accountReference() + "\n" + event.bankReceiptId()
-                + "\n" + event.amount() + "\n" + event.currency() + "\n" + (event.reference() == null ? "" : event.reference()) + "\n" + event.postedAt());
-    }
-    private static String sha256(String value) {
-        try { return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); }
-        catch (Exception exception) { throw new IllegalStateException(exception); }
+        return ReceiptFacts.hash(event.source(), event.projectId(), event.accountReference(),
+                event.bankReceiptId(), event.amount(), event.currency(), event.reference(), event.postedAt());
     }
     private static Event event(ResultSet rs) throws SQLException { return new Event(rs.getObject("id", UUID.class), rs.getString("source"), rs.getObject("project_id", UUID.class), rs.getString("account_reference"), rs.getString("bank_receipt_id"), rs.getLong("amount_paise"), rs.getString("currency"), rs.getString("demand_reference"), rs.getTimestamp("posted_at").toInstant(), rs.getInt("attempt_count")); }
     private static Receipt receipt(ResultSet rs) throws SQLException { return new Receipt(rs.getObject("id", UUID.class), rs.getObject("project_id", UUID.class), rs.getLong("amount_paise"), rs.getString("currency"), rs.getString("demand_reference"), rs.getTimestamp("posted_at").toInstant(), rs.getString("fact_hash")); }

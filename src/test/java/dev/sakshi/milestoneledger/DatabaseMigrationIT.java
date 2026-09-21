@@ -34,6 +34,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
@@ -46,7 +47,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         "app.receipt-worker.initial-delay-ms=60000" })
 class DatabaseMigrationIT {
     private static final String PROJECT_ID = "30000000-0000-0000-0000-000000000001";
-    @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6-alpine")
+    @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(DockerImageName.parse("postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94").asCompatibleSubstituteFor("postgres"))
             .withDatabaseName("milestone_ledger_test").withUsername("test_owner").withPassword("test-owner-password")
             .withInitScript("db/test/create-runtime-role.sql");
 
@@ -238,6 +239,89 @@ class DatabaseMigrationIT {
                 assertThat(rows.next()).isTrue();
                 assertThat(rows.next()).isTrue();
                 assertThat(rows.next()).isFalse();
+            }
+        }
+    }
+
+    @Test void v8FinancialAndInvestigationRecordsSurviveReconciliationMigrations() throws Exception {
+        String schema = "day5_upgrade_" + UUID.randomUUID().toString().replace('-', '_');
+        Flyway.configure().dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .schemas(schema).defaultSchema(schema).target(MigrationVersion.fromVersion("8")).load().migrate();
+        UUID receiptId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        UUID exceptionId = UUID.randomUUID();
+        UUID demandId = UUID.randomUUID();
+        try (Connection owner = ownerConnection(); var statement = owner.createStatement()) {
+            statement.execute("set search_path to " + schema);
+            statement.executeUpdate("""
+                    update milestone set certified_amount_paise=123, certification_reference='UPGRADE-CERT',
+                        certified_at=now(), certified_by='10000000-0000-0000-0000-000000000003'
+                    where id='40000000-0000-0000-0000-000000000001'
+                    """);
+            try (var insert = owner.prepareStatement("""
+                    insert into demand(id,milestone_id,project_id,reference,amount_paise)
+                    values (?,'40000000-0000-0000-0000-000000000001',?::uuid,'UPGRADE-DEMAND',123)
+                    """)) {
+                insert.setObject(1, demandId); insert.setString(2, PROJECT_ID); insert.executeUpdate();
+            }
+            try (var insert = owner.prepareStatement("""
+                    insert into inbox_event(id,source,event_id,project_id,account_reference,bank_receipt_id,
+                        amount_paise,currency,posted_at,canonical_hash)
+                    values (?, 'fixture', 'pending-upgrade', ?::uuid,
+                        'trusted-account', 'pending-upgrade', 123, 'INR', now(), repeat('0',64))
+                    """)) {
+                insert.setObject(1, eventId); insert.setString(2, PROJECT_ID); insert.executeUpdate();
+            }
+            try (var insert = owner.prepareStatement("""
+                    insert into receipt(id,source,bank_receipt_id,project_id,amount_paise,currency,posted_at,fact_hash)
+                    values (?, 'fixture', 'posted-upgrade', ?::uuid, 123, 'INR', now(), repeat('0',64))
+                    """)) {
+                insert.setObject(1, receiptId); insert.setString(2, PROJECT_ID); insert.executeUpdate();
+            }
+            try (var insert = owner.prepareStatement("""
+                    insert into financial_entry(kind,receipt_id,amount_paise,actor_id,reason)
+                    values ('RECEIPT',?,123,'10000000-0000-0000-0000-000000000004','UPGRADE_CHECK')
+                    """)) {
+                insert.setObject(1, receiptId); insert.executeUpdate();
+            }
+            try (var insert = owner.prepareStatement("""
+                    insert into financial_entry(kind,receipt_id,demand_id,amount_paise,actor_id,reason)
+                    values ('ALLOCATION',?,?,123,'10000000-0000-0000-0000-000000000004','UPGRADE_ALLOCATION')
+                    """)) {
+                insert.setObject(1, receiptId); insert.setObject(2, demandId); insert.executeUpdate();
+            }
+            try (var insert = owner.prepareStatement("""
+                    insert into exception_case(id,type,project_id,receipt_id,dedupe_key,reason_code)
+                    values (?,'BANK_RECORD_CONFLICT',?::uuid,?,'upgrade-conflict','FACTS_CHANGED')
+                    """)) {
+                insert.setObject(1, exceptionId); insert.setString(2, PROJECT_ID);
+                insert.setObject(3, receiptId); insert.executeUpdate();
+            }
+            try (var insert = owner.prepareStatement("""
+                    insert into audit_event(actor_id,action,entity_type,entity_id,reason,request_id)
+                    values ('10000000-0000-0000-0000-000000000004','EXCEPTION_NOTE','EXCEPTION',?,
+                        'Synthetic investigation note','upgrade-test')
+                    """)) {
+                insert.setObject(1, exceptionId); insert.executeUpdate();
+            }
+        }
+        Flyway.configure().dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .schemas(schema).defaultSchema(schema).load().migrate();
+        try (Connection owner = ownerConnection(); var statement = owner.createStatement()) {
+            statement.execute("set search_path to " + schema);
+            for (String table : List.of("inbox_event", "receipt", "financial_entry", "exception_case", "audit_event", "demand")) {
+                try (var rows = statement.executeQuery("select count(*) from " + table + " where "
+                        + (table.equals("inbox_event") ? "id='" + eventId + "'" :
+                        table.equals("receipt") ? "id='" + receiptId + "'" :
+                        table.equals("financial_entry") ? "receipt_id='" + receiptId + "'" :
+                        table.equals("exception_case") ? "id='" + exceptionId + "'" :
+                        table.equals("demand") ? "id='" + demandId + "'" :
+                        "entity_id='" + exceptionId + "'"))) {
+                    rows.next(); assertThat(rows.getInt(1)).isEqualTo(table.equals("financial_entry") ? 2 : 1);
+                }
+            }
+            try (var rows = statement.executeQuery("select count(*) from reconciliation_run")) {
+                rows.next(); assertThat(rows.getInt(1)).isZero();
             }
         }
     }

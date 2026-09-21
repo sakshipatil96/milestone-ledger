@@ -38,12 +38,15 @@ public class BankWebhookService {
     private final ObjectMapper objectMapper;
     private final BankWebhookProperties properties;
     private final Clock clock;
+    private final InboxEventStore inbox;
 
-    public BankWebhookService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, BankWebhookProperties properties, Clock clock) {
+    public BankWebhookService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, BankWebhookProperties properties,
+                              Clock clock, InboxEventStore inbox) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.clock = clock;
+        this.inbox = inbox;
     }
 
     @Transactional
@@ -54,15 +57,9 @@ public class BankWebhookService {
                 + notification.amountPaise() + "\n" + notification.currency() + "\n" + notification.demandReference()
                 + "\n" + notification.postedAt());
         UUID id = UUID.randomUUID();
-        Instant now = clock.instant();
-        int inserted = jdbcTemplate.update("""
-                insert into inbox_event (id, source, event_id, project_id, account_reference, bank_receipt_id,
-                    amount_paise, currency, demand_reference, posted_at, canonical_hash, next_attempt_at, received_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                on conflict (source, event_id) do nothing
-                """, id, properties.source(), notification.eventId(), properties.projectId(), properties.accountReference(),
-                notification.bankReceiptId(), notification.amountPaise(), notification.currency(), notification.demandReference(),
-                Timestamp.from(notification.postedAt()), canonicalHash, Timestamp.from(now), Timestamp.from(now));
+        int inserted = inbox.insert(id, properties.source(), notification.eventId(), properties.projectId(),
+                properties.accountReference(), notification.bankReceiptId(), notification.amountPaise(),
+                notification.currency(), notification.demandReference(), notification.postedAt(), canonicalHash, "WEBHOOK");
         if (inserted == 0) {
             InboxRow existing = jdbcTemplate.queryForObject("""
                     select id, status, project_id, account_reference, bank_receipt_id, amount_paise,
