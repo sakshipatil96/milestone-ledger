@@ -21,8 +21,11 @@ import dev.sakshi.milestoneledger.shared.validation.ValidationRules;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.AccessDeniedException;
@@ -59,6 +62,16 @@ class DatabaseMigrationIT {
     @Autowired JdbcTemplate jdbcTemplate;
     @Autowired SetupQueryService setupQueryService;
     @LocalServerPort int serverPort;
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void structuredApplicationLogsOmitExceptionDetails(CapturedOutput output) {
+        org.slf4j.LoggerFactory.getLogger(DatabaseMigrationIT.class)
+                .error("safe-log-probe", new IllegalStateException("sensitive-probe"));
+
+        assertThat(output.getOut()).contains("safe-log-probe")
+                .doesNotContain("sensitive-probe", "stack_trace");
+    }
 
     @Test void migrationsSeedOnceAndRuntimeRoleCanOnlyReadSetup() throws Exception {
         assertThat(jdbcTemplate.queryForObject("select count(*) from project where code = ?", Integer.class, "DEMO-RIVER-001")).isOne();

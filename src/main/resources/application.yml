@@ -62,5 +62,7 @@ info:
 
 logging:
   structured:
+    json:
+      exclude: error
     format:
       console: ecs
