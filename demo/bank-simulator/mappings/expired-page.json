@@ -1,0 +1,5 @@
+{
+  "priority": 1,
+  "request": { "method": "GET", "urlPath": "/receipts", "queryParameters": { "cursor": { "equalTo": "expired" } } },
+  "response": { "status": 410, "jsonBody": { "error": "synthetic expired snapshot" } }
+}

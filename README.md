@@ -6,7 +6,7 @@ This is a synthetic-data portfolio prototype inspired by a contractor workflow. 
 
 ## Current status
 
-Day 4 adds collections worklists, ingestion-lag visibility, append-only investigation notes, and idempotent manual allocation to the certified-demand slice. Signed deliveries remain durably accepted and receipts/financial entries remain immutable.
+Day 5 adds durable bank-snapshot reconciliation and a reproducible proof flow to the certified-demand and collections slice. Signed deliveries and trusted recovery events share the inbox path; receipts, financial entries, and investigation notes remain append-only. Remote CI success is pending an authorized commit and push.
 
 ## Planned stack
 
@@ -27,7 +27,7 @@ AI guidance and working checklists are intentionally local-only and excluded fro
 
 ## Current proof and boundary
 
-The demo certifies one scheduled ₹1,00,000 milestone, then sends signed synthetic notifications and polls each inbox event to a terminal state. Use `GET /api/v1/demands?status=OPEN&status=PARTIALLY_PAID`, `GET /api/v1/receipts`, and `GET /api/v1/exceptions` to inspect outstanding money, received money, lag, and exceptions. Accounts or a manager can append a note and allocate an unmatched receipt with CSRF plus an idempotency key. A ₹40,000 receipt allocated first for ₹15,000 remains an open residual; allocating the final ₹25,000 resolves that residual and leaves the demand outstanding at ₹60,000. Reversal and reconciliation remain out of scope.
+The proof certifies one scheduled ₹1,00,000 milestone, records a ₹40,000 receipt, appends a note, and allocates ₹15,000 then ₹25,000. It then shows five deliveries with one receipt effect, two distinct equal-value receipts, and a missed ₹60,000 notification recovered from a bank snapshot. The remaining demand becomes settled. A repeat run creates no duplicate money; changed bank facts and a local-only receipt remain visible as discrepancies; an unavailable page ends in a visible failed run. Reversal remains deferred.
 
 ## Scope boundaries
 
@@ -78,15 +78,37 @@ Do not use `docker compose down -v`: the named volume intentionally preserves fi
 
 ## Run verification
 
-The Maven Wrapper runs unit tests and PostgreSQL integration tests. Docker Desktop must be running.
+The Maven Wrapper runs unit tests and PostgreSQL integration tests. Docker Desktop must be running and accessible. CI uses the same command on Java 21 and retains test reports on failure; Docker-backed tests fail the job if Docker is unavailable.
 
 ```bash
 ./mvnw verify
 ```
 
-The integration tests start isolated PostgreSQL 17 containers, apply migrations with the owner identity, run the application with the restricted runtime identity, and cover Day 1/2 regressions, V5-to-Day-3 upgrade, signed webhook acceptance, processing/locking, rollback, retry, and operational APIs.
+The integration tests start isolated PostgreSQL 17 containers, apply migrations with the owner identity, run the application with the restricted runtime identity, and cover V8-through-V10 upgrade, signed webhook acceptance, processing/locking, rollback, retry, reconciliation recovery, exceptions, failed snapshots, and operational APIs.
+
+## Five-minute proof
+
+Run this against Docker Desktop from a fresh checkout. The runner creates disposable synthetic credentials and an isolated Compose project on alternate localhost ports. It does not use or remove the developer's usual Compose volume. Build and health startup are excluded from the timed proof; the runner asserts the timed portion stays within five minutes, then restarts the app and re-reads persisted run and receipt IDs.
+
+```bash
+bash demo/run-day5-compose.sh
+```
+
+The earlier under-two-minute collections inspection remains available through `bash demo/run-day4-compose.sh`. The Day 5 runner reuses that flow, then adds reconciliation checks. Its bank controls are WireMock admin mappings on the local simulator, not product endpoints. The default static snapshot is deliberately empty; the demo installs synthetic mappings while it runs and removes them afterward.
+
+## Operations and limitations
+
+See [operations](OPERATIONS.md) for failed ingestion, reconciliation, restart, and backup/restore procedures. Reconciliation depends on a stable, complete simulated snapshot through its `asOf`; it cannot prove bank completeness outside that simulator contract. The MVP has one configured project/source/account, INR only, no real bank integration, no allocation reversal, no outbound outbox, and no public deployment. Readiness checks database health, while reconciliation progress and errors come from the run API and worklist metadata.
+
+Build and Compose images are pinned by locally resolved SHA-256 digests; GitHub Actions are pinned to full commit SHAs. Maven dependency versions resolve through the pinned Spring Boot parent and Maven Wrapper. `APP_VERSION` is the GitHub revision in CI test logs; the isolated local demo labels its uncommitted working tree separately. A remote green Actions run cannot be claimed until these changes are committed and pushed with authorization.
 
 ## Latest verification evidence
+
+On 2026-09-20, the final local `./mvnw verify -q` passed **75 tests, zero failures/errors/skips** against pinned PostgreSQL 17.6 Testcontainers. `ReconciliationIT` covers omitted receipt recovery, repeated runs, webhook precedence, changed and local-only facts, complete two-page staging, malformed/looping/inconsistent/expired/oversized snapshot handling, database-unsafe text, five fetch attempts, failed recovery events, historical counts, role/CSRF/scope/idempotency, concurrent starts, lease takeover/stale write rejection, a conflict observed after snapshot `asOf`, manager retry during finalization, bounded absence batches, and new application instances resuming after page commit, during comparison, and while awaiting recovery. `DatabaseMigrationIT` verifies fresh migrations and V8 upgrade with existing pending event, demand, receipt, receipt/allocation entries, exception, and investigation note. Testcontainers fails the suite when Docker is unavailable.
+
+`bash demo/run-day5-compose.sh` passed on a fresh isolated Compose project with V10 and pinned images. The final timed proof took **28 seconds**, excluding build/startup; it verified the Day 4 inspection/allocation flow, five duplicate deliveries, two equal-value distinct receipts, missed-notification recovery, repeat safety, changed facts, local-only discrepancy, unavailable snapshot page, and persisted run/receipt reads after an app restart. Its synthetic named volume was retained; no developer volume was touched.
+
+Performance method: on a local **Darwin arm64** host with **Docker Desktop 29.6.1**, PostgreSQL 17.6, and Java 21, `ReconciliationIT.measureThousandReceiptWorklistAndNormalProcessing` inserted 1,000 receipts with receipt entries, warmed the API, then timed ten authenticated page-100 worklist requests. The final run measured **127–150 ms**, nearest-rank p95 **150 ms** against the under-one-second target. One normal receipt processing transaction took **6 ms** against the five-second target. These are local observations, not production capacity claims. The tested base Git revision was `f37dd85ab0de6644c85ef4d1887d8a8bbfe2dadb` plus the uncommitted Day 5 working tree; there is no immutable final revision or remote CI result yet.
 
 On 2026-09-20, `./mvnw verify -q` passed locally with PostgreSQL 17 Testcontainers (50 tests, no failures/errors). Coverage includes V7→V8 financial-record preservation, worklist filters and tied-timestamp cursors, a PostgreSQL-synchronized single-response snapshot, pending/failed ingestion without phantom money, empty-versus-missing history, no-receipt residuals, boundary and project-scope errors, and a real worklist dependency failure. Successful collection reads are quiet; failed reads retain correlated status and timing without logging query strings or credentials. Manual-allocation races, rollback, persisted notes, role checks, and replay after application restart are also covered.
 

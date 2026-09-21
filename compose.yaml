@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17.6-alpine
+    image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
     environment:
       POSTGRES_DB: milestone_ledger
       POSTGRES_USER: milestone_owner
@@ -18,7 +18,7 @@ services:
       retries: 12
 
   bank-simulator:
-    image: wiremock/wiremock:3.13.1
+    image: wiremock/wiremock:3.13.1@sha256:d61e7720f89483fdef5366843b58d1dfd06bcce5828179c9f2f54de5c28354b0
     ports:
       - "127.0.0.1:8089:8080"
     volumes:
@@ -42,6 +42,7 @@ services:
       BANK_BASE_URL: http://bank-simulator:8080
       BANK_WEBHOOK_SIGNING_SECRET: ${BANK_WEBHOOK_SIGNING_SECRET}
       BANK_WEBHOOK_PROJECT_ID: ${BANK_WEBHOOK_PROJECT_ID}
+      APP_VERSION: ${APP_VERSION:-0.1.0-SNAPSHOT}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

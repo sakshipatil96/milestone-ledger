@@ -1,0 +1,5 @@
+{
+  "priority": 1,
+  "request": { "method": "GET", "urlPath": "/receipts", "queryParameters": { "cursor": { "equalTo": "unavailable" } } },
+  "response": { "status": 503, "jsonBody": { "error": "synthetic bank outage" } }
+}

@@ -1,0 +1,5 @@
+{
+  "priority": 1,
+  "request": { "method": "GET", "urlPath": "/receipts", "queryParameters": { "cursor": { "equalTo": "malformed" } } },
+  "response": { "status": 200, "headers": { "Content-Type": "application/json" }, "jsonBody": { "snapshotId": "broken", "asOf": "not-a-time", "items": [], "nextCursor": null } }
+}

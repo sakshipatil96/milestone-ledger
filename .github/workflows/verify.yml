@@ -1,0 +1,41 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Check Docker and tested revision
+        run: |
+          docker info --format '{{.ServerVersion}}'
+          echo "Testing revision $GITHUB_SHA"
+          java -version
+      - name: Verify all tests, including PostgreSQL integration tests
+        env:
+          APP_VERSION: ${{ github.sha }}
+        run: ./mvnw --batch-mode verify
+      - name: Retain test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v4.6.2
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+          if-no-files-found: warn
+          retention-days: 7
